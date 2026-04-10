@@ -43,7 +43,11 @@ def parse_signal(text: str) -> dict[str, float]:
             continue
         if symbol.lower() in CASH_ALIASES:
             symbol = "USDC"
-        allocations[symbol] = pct
+        if symbol in allocations:
+            logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, allocations[symbol], pct)
+            allocations[symbol] += pct
+        else:
+            allocations[symbol] = pct
     return allocations
 
 

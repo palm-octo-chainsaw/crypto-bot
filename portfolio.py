@@ -5,7 +5,7 @@ from data.trading import create_binance, execute_trade, find_direct_pair
 from telegram_bot import Bot
 from summary import Summary
 from data.balance import Balance
-from constants import BINANCE_API_KEY, BINANCE_API_SECRET
+from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD
 
 
 logger = setup_logging('info')
@@ -109,9 +109,9 @@ class Portfolio:
         rebalance = self._compute_rebalance(prices, values, total_value)
 
         stable = "USDC"
-        min_trade_usd = 1.0
         sells = {}
         buys = {}
+        results = []
         for symbol, amount in rebalance.items():
             if symbol == stable:
                 continue
@@ -119,9 +119,15 @@ class Portfolio:
                 logger.warning("No price data for %s — skipping", symbol)
                 continue
             usd_value = abs(amount) * prices[symbol]
-            if amount < -1e-6 and usd_value >= min_trade_usd:
+            if abs(amount) < 1e-6:
+                continue
+            if usd_value < MIN_TRADE_USD:
+                logger.info("Trade for %s ($%.2f) below minimum $%.2f — skipping", symbol, usd_value, MIN_TRADE_USD)
+                results.append({"symbol": symbol, "side": "sell" if amount < 0 else "buy", "usd_value": usd_value, "dust": True})
+                continue
+            if amount < 0:
                 sells[symbol] = abs(amount)
-            elif amount > 1e-6 and usd_value >= min_trade_usd:
+            else:
                 buys[symbol] = amount
 
         if not sells and not buys:
@@ -131,10 +137,9 @@ class Portfolio:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
         except Exception as err:
             logger.error("Failed to connect to Binance: %s", err)
-            return f"⚠️ Failed to connect to Binance: {err}"
+            return "⚠️ Failed to connect to Binance. Check logs for details."
 
         mode = "DRY RUN" if dry_run else "LIVE"
-        results = []
 
         for token, amount in sells.items():
             if not _is_tradeable(exchange, token, stable):
@@ -163,10 +168,12 @@ class Portfolio:
 
         lines = [f"🔄 *Rebalance {mode}*\n"]
         for trade in results:
-            if trade.get("skipped"):
+            if trade.get("dust"):
+                lines.append(f"🔸 DUST {trade['symbol']} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum")
+            elif trade.get("skipped"):
                 lines.append(f"⏭️ SKIP {trade['symbol']} — not tradeable on Binance")
             elif "error" in trade:
-                lines.append(f"❌ {trade['side'].upper()} {trade['symbol']}: {trade['error']}")
+                lines.append(f"❌ {trade['side'].upper()} {trade['symbol']}: trade failed (see logs)")
             elif trade.get("dry_run"):
                 lines.append(f"📋 {trade['side'].upper()} `{trade['amount']}` {trade['symbol']}")
             else:

@@ -12,6 +12,7 @@ CHAT_ID = getenv("CHAT_ID")
 META_MASK = getenv("META_MASK")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CRYPTO_PRICES_URL = "https://api.coingecko.com/api/v3/simple/price"
+MIN_TRADE_USD = float(getenv("MIN_TRADE_USD", "1.0"))
 TRW_EMAIL = getenv("TRW_EMAIL")
 TRW_PASSWORD = getenv("TRW_PASSWORD")
 TRW_TOTP_SECRET = getenv("TRW_TOTP_SECRET")

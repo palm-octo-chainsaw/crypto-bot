@@ -1,8 +1,12 @@
+import logging
+
 from telegram import Update, BotCommand
 from telegram.ext import ContextTypes, ExtBot, Application
 
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
+
+logger = logging.getLogger(__name__)
 
 
 portfolio = Portfolio()
@@ -61,7 +65,8 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD"
         await update.message.reply_text(format_message(message), parse_mode="Markdown")
     except Exception as error:
-        await update.message.reply_text(f"⚠️ Error: {error}", parse_mode="Markdown")
+        logger.error("Command failed: %s", error, exc_info=True)
+        await update.message.reply_text("⚠️ Something went wrong. Check logs for details.", parse_mode="Markdown")
 
 
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -72,7 +77,8 @@ async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             message += f"{symbol}: {value}\n"
         await update.message.reply_text(format_message(message), parse_mode="Markdown")
     except Exception as error:
-        await update.message.reply_text(f"⚠️ Error: {error}", parse_mode="Markdown")
+        logger.error("Command failed: %s", error, exc_info=True)
+        await update.message.reply_text("⚠️ Something went wrong. Check logs for details.", parse_mode="Markdown")
 
 
 async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -82,7 +88,8 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
             message += f"{symbol}: {value}\n"
         await update.message.reply_text(format_message(message), parse_mode="Markdown")
     except Exception as error:
-        await update.message.reply_text(f"⚠️ Error: {error}", parse_mode="Markdown")
+        logger.error("Command failed: %s", error, exc_info=True)
+        await update.message.reply_text("⚠️ Something went wrong. Check logs for details.", parse_mode="Markdown")
 
 
 async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,4 +128,5 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(format_message(message), parse_mode="Markdown")
 
     except Exception as error:
-        await update.message.reply_text(f"⚠️ Error fetching signal: {error}", parse_mode="Markdown")
+        logger.error("Failed to fetch signal: %s", error, exc_info=True)
+        await update.message.reply_text("⚠️ Error fetching signal. Check logs for details.", parse_mode="Markdown")
