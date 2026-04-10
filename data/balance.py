@@ -138,8 +138,8 @@ class Balance:
                 entry["asset"]: float(entry["free"]) + float(entry["locked"])
                 for entry in account_info.get("balances", [])
             }
-        except Exception as e:
-            logger.error(f"Binance account fetch error: {e}")
+        except Exception as err:
+            logger.error(f"Binance account fetch error: {err}")
             self._binance_balances = {}
 
     def refresh_binance_balances(self) -> None:
@@ -180,6 +180,6 @@ class Balance:
                 logger.error(f"Kraken API error: {result['error']}")
                 return {}
             return result["result"]
-        except Exception as e:
-            logger.error(f"Kraken balance fetch error: {e}")
+        except Exception as err:
+            logger.error(f"Kraken balance fetch error: {err}")
             return {}
