@@ -188,6 +188,9 @@ class Portfolio:
                        "dry_run" if trade.get("dry_run") else "filled",
                 order_id=trade.get("id"),
                 dry_run=dry_run,
+                fee_amount=trade.get("fee_amount"),
+                fee_currency=trade.get("fee_currency"),
+                fee_rate=trade.get("fee_rate"),
             )
 
         lines = [f"🔄 *Rebalance {mode}*\n"]
