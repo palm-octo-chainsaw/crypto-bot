@@ -204,7 +204,7 @@ async def _open_channel(p, *, save_session: bool = True):
                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
-        await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(3000)
 
         # Check if we're still logged in
@@ -217,7 +217,7 @@ async def _open_channel(p, *, save_session: bool = True):
             device_limit = page.get_by_text("Device Limit Reached", exact=False)
             if await device_limit.count() > 0:
                 await _handle_device_limit(page)
-                await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+                await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(5000)
             return browser, context, page
 
@@ -229,14 +229,14 @@ async def _open_channel(p, *, save_session: bool = True):
                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     )
     page = await context.new_page()
-    await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
     await _login(page)
 
     # Handle device limit if it appears after login
     device_limit = page.get_by_text("Device Limit Reached", exact=False)
     if await device_limit.count() > 0:
         await _handle_device_limit(page)
-        await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(5000)
 
     # Save session for reuse
