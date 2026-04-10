@@ -22,6 +22,7 @@ KNOWN_TOKENS = {
 
 SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
+os.makedirs(DEBUG_DIR, exist_ok=True)
 DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
 
 
