@@ -28,7 +28,7 @@ def parse_signal(text: str) -> dict[str, float]:
     if start == -1:
         return {}
 
-    section = text[start:start + 500]
+    section = text[start:]
     for delimiter in ["Executive Summary", "Associated Data", "———", "─────"]:
         end = section.find(delimiter)
         if end > 0:
@@ -74,6 +74,7 @@ async def _login(page) -> None:
     totp = pyotp.TOTP(TRW_TOTP_SECRET)
     code = totp.now()
 
+    totp_input = None
     for selector in [
         'input[inputmode="numeric"]',
         'input[type="tel"]',
@@ -86,6 +87,10 @@ async def _login(page) -> None:
         if await candidate.count() > 0 and await candidate.first.is_visible():
             totp_input = candidate.first
             break
+
+    if totp_input is None:
+        await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
+        raise RuntimeError("Could not find TOTP input field. Check /tmp/trw_debug.png")
 
     await totp_input.wait_for(timeout=10000)
     await totp_input.click()
@@ -145,7 +150,7 @@ async def _extract_signal(page) -> dict[str, float]:
         body_text = await page.inner_text("body")
         if "rsps signal" in body_text.lower():
             start = body_text.lower().index("rsps signal")
-            signal_text = body_text[start:start + 500]
+            signal_text = body_text[start:]
             logger.info("[TRW] Found signal in page body text")
 
     if not signal_text:
@@ -238,16 +243,18 @@ async def fetch_signal() -> dict[str, float]:
         raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
 
     browser = None
+    page = None
     async with async_playwright() as p:
         try:
             browser, context, page = await _open_channel(p)
             await page.wait_for_timeout(5000)
             return await _extract_signal(page)
         except PwTimeout as err:
-            try:
-                await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
-            except Exception:
-                pass
+            if page:
+                try:
+                    await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
+                except Exception:
+                    pass
             logger.error("[TRW] Timeout — screenshot saved to /tmp/trw_debug.png")
             raise RuntimeError(f"TRW page timed out: {err}") from err
         finally:

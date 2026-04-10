@@ -12,10 +12,7 @@ logger = setup_logging('info')
 
 
 def _is_tradeable(exchange, token: str, stable: str) -> bool:
-    """Check if a token can be traded on the exchange (direct or via stable)."""
-    if find_direct_pair(exchange, token, stable):
-        return True
-    # Check two-leg route: token->stable and stable->token
+    """Check if a token has a direct or routable pair on the exchange."""
     return bool(find_direct_pair(exchange, token, stable)) or \
            bool(find_direct_pair(exchange, stable, token))
 
