@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import tempfile
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
 import pyotp
 
@@ -20,6 +21,8 @@ KNOWN_TOKENS = {
 }
 
 SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
+DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
+DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
 
 
 def parse_signal(text: str) -> dict[str, float]:
@@ -48,6 +51,21 @@ def parse_signal(text: str) -> dict[str, float]:
             allocations[symbol] += pct
         else:
             allocations[symbol] = pct
+
+    total_allocation = sum(allocations.values())
+    if total_allocation == 0:
+        logger.warning("Parsed allocations sum to 0%% — returning empty")
+        return {}
+
+    if not (95.0 <= total_allocation <= 105.0):
+        logger.warning(
+            "Parsed allocations sum to %.2f%% (outside [95%%, 105%%]); normalizing to 100%%",
+            total_allocation,
+        )
+        factor = 100.0 / total_allocation
+        for symbol in allocations:
+            allocations[symbol] *= factor
+
     return allocations
 
 
@@ -93,8 +111,8 @@ async def _login(page) -> None:
             break
 
     if totp_input is None:
-        await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
-        raise RuntimeError("Could not find TOTP input field. Check /tmp/trw_debug.png")
+        await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+        raise RuntimeError(f"Could not find TOTP input field. Check {DEBUG_SCREENSHOT}")
 
     await totp_input.wait_for(timeout=10000)
     await totp_input.click()
@@ -158,8 +176,8 @@ async def _extract_signal(page) -> dict[str, float]:
             logger.info("[TRW] Found signal in page body text")
 
     if not signal_text:
-        await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
-        raise RuntimeError("Could not find RSPS signal on page. Check /tmp/trw_debug.png")
+        await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+        raise RuntimeError(f"Could not find RSPS signal on page. Check {DEBUG_SCREENSHOT}")
 
     allocations = parse_signal(signal_text)
     if not allocations:
@@ -257,10 +275,10 @@ async def fetch_signal() -> dict[str, float]:
         except PwTimeout as err:
             if page:
                 try:
-                    await page.screenshot(path="/tmp/trw_debug.png", full_page=False)
+                    await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
                 except Exception:
                     pass
-            logger.error("[TRW] Timeout — screenshot saved to /tmp/trw_debug.png")
+            logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
             raise RuntimeError(f"TRW page timed out: {err}") from err
         finally:
             if browser:

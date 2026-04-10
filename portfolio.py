@@ -123,7 +123,7 @@ class Portfolio:
                 continue
             if usd_value < MIN_TRADE_USD:
                 logger.info("Trade for %s ($%.2f) below minimum $%.2f — skipping", symbol, usd_value, MIN_TRADE_USD)
-                results.append({"symbol": symbol, "side": "sell" if amount < 0 else "buy", "usd_value": usd_value, "dust": True})
+                results.append({"symbol": symbol, "side": "sell" if amount < 0 else "buy", "amount": amount, "usd_value": usd_value, "dust": True})
                 continue
             if amount < 0:
                 sells[symbol] = abs(amount)
