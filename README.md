@@ -1,12 +1,14 @@
 # crypto-telegram-bot
 
-A Telegram bot for tracking a multi-source crypto portfolio and executing rebalancing trades on Binance.
+A Telegram bot for tracking a multi-source crypto portfolio, executing rebalancing trades on Binance, and automatically fetching signal allocations.
 
 ## Features
 
 - **Multi-source balance aggregation** — combines on-chain wallets, Binance, Kraken, and Hyperliquid into a single portfolio view
 - **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance
+- **Signal scraping** — fetches RSPS signal allocations via headless browser with TOTP authentication
 - **Dry-run mode** — preview trades before executing anything real
+- **Dust filtering** — skips trades below a configurable USD minimum to avoid exchange errors
 - **Leverage token tracking** — monitors ERC-20 leverage tokens on Arbitrum
 - **Telegram interface** — all commands available via bot
 
@@ -34,6 +36,7 @@ A Telegram bot for tracking a multi-source crypto portfolio and executing rebala
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
 
 ### 2. Configure environment
@@ -55,6 +58,14 @@ BINANCE_API_SECRET=your_binance_api_secret
 # Kraken (balance tracking only)
 KRAKEN_API_KEY=your_kraken_api_key
 KRAKEN_API_SECRET=your_kraken_api_secret
+
+# Signal scraper (optional)
+TRW_EMAIL=your_email
+TRW_PASSWORD=your_password
+TRW_TOTP_SECRET=your_totp_secret
+
+# Trade settings (optional)
+MIN_TRADE_USD=1.0
 ```
 
 ### 3. Set target allocations
@@ -96,6 +107,7 @@ docker run --env-file .env crypto-telegram-bot
 | `/set_target SYMBOL PCT` | Update a target (e.g. `/set_target BTC 40`) |
 | `/rebalance` | Preview rebalancing trades (dry run) |
 | `/rebalance live` | Execute real market orders on Binance |
+| `/fetch_signal` | Fetch latest RSPS signal and update targets |
 
 ## Architecture
 
@@ -105,12 +117,12 @@ run.py                          # Entry point, registers Telegram handlers
 ├── data/
 │   ├── balance.py              # Multi-source balance aggregation
 │   ├── trading.py              # ccxt trade routing and order execution
-│   └── prices.py               # CoinGecko price fetching
+│   ├── prices.py               # CoinGecko price fetching
+│   └── scraper.py              # Signal scraper (Playwright + TOTP)
 ├── utils/
 │   ├── command_handlers.py     # Telegram command handlers
 │   └── helpers.py              # JSON I/O, logging, formatting
 ├── summary.py                  # Message formatting
-├── telegram_bot.py             # Telegram bot wrapper
 ├── constants.py                # Environment variable loading
 └── config/
     └── targets.json            # Target allocations
@@ -122,4 +134,4 @@ The bot computes the delta between each asset's current allocation and its targe
 
 `/rebalance` shows the exact trades needed. `/rebalance live` executes them as market orders on Binance, selling over-allocated assets first (to free USDC), then buying under-allocated ones. Trade routing prefers direct pairs and falls back to routing through USDC.
 
-Only assets on Binance can be traded. On-chain and Kraken/Hyperliquid balances are included in the portfolio calculation but must be rebalanced manually.
+Trades below the `MIN_TRADE_USD` threshold (default $1) are skipped as dust. Assets without a Binance trading pair are flagged and skipped. On-chain and Kraken/Hyperliquid balances are included in the portfolio calculation but must be rebalanced manually.
