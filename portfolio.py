@@ -2,7 +2,6 @@ from typing import Dict, Tuple
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
 from data.trading import create_binance, execute_trade, find_direct_pair
-from telegram_bot import Bot
 from summary import Summary
 from data.balance import Balance
 from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD
@@ -19,7 +18,6 @@ def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
 
 class Portfolio:
     def __init__(self):
-        self.bot: Bot = Bot()
         self.summary: Summary = Summary()
         self.balance: Balance = Balance()
         self.targets: dict = load_json("config/targets.json")
@@ -95,10 +93,6 @@ class Portfolio:
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
         return self.summary.flush_summary()
-
-    def process(self) -> None:
-        message = self.listener()
-        self.bot.send_message(message)
 
     def execute_rebalance(self, dry_run: bool = True) -> str:
         if not BINANCE_API_KEY or not BINANCE_API_SECRET:

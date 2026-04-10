@@ -2,15 +2,13 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 
 from constants import BOT_TOKEN
 from utils.command_handlers import (
-    portfolio, post_init, check, set_target,
+    post_init, check, set_target,
     get_targets, get_total, get_spot_balance,
     get_leverage_balance, rebalance, fetch_signal
 )
 
 
 if __name__ == "__main__":
-    portfolio.process()
-
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("check", check))
