@@ -188,20 +188,6 @@ async def _extract_signal(page) -> dict[str, float]:
     return allocations
 
 
-async def _extract_timestamps(page) -> list[str]:
-    """Extract message timestamps from the loaded channel page."""
-    body_text = await page.inner_text("body")
-    # Match patterns like "Today at 3:10 AM", "Yesterday at 10:00 PM", "04/09/2026 3:10 AM"
-    patterns = re.findall(
-        r"(?:Today|Yesterday|\d{1,2}/\d{1,2}/\d{2,4})\s+(?:at\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)",
-        body_text, re.IGNORECASE,
-    )
-    if not patterns:
-        # Try just time-of-day patterns
-        patterns = re.findall(r"\d{1,2}:\d{2}\s*(?:AM|PM)", body_text, re.IGNORECASE)
-    return patterns
-
-
 async def _open_channel(p, *, save_session: bool = True):
     """Open signal channel, handling login and device limits. Returns (browser, context, page)."""
     session_path = os.path.abspath(SESSION_DIR)
@@ -218,7 +204,7 @@ async def _open_channel(p, *, save_session: bool = True):
                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
-        await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(3000)
 
         # Check if we're still logged in
@@ -231,7 +217,7 @@ async def _open_channel(p, *, save_session: bool = True):
             device_limit = page.get_by_text("Device Limit Reached", exact=False)
             if await device_limit.count() > 0:
                 await _handle_device_limit(page)
-                await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+                await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(5000)
             return browser, context, page
 
@@ -243,14 +229,14 @@ async def _open_channel(p, *, save_session: bool = True):
                    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     )
     page = await context.new_page()
-    await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
     await _login(page)
 
     # Handle device limit if it appears after login
     device_limit = page.get_by_text("Device Limit Reached", exact=False)
     if await device_limit.count() > 0:
         await _handle_device_limit(page)
-        await page.goto(TRW_SIGNAL_URL, wait_until="networkidle", timeout=30000)
+        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(5000)
 
     # Save session for reuse
@@ -281,53 +267,6 @@ async def fetch_signal() -> dict[str, float]:
                     pass
             logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
             raise RuntimeError(f"TRW page timed out: {err}") from err
-        finally:
-            if browser:
-                await browser.close()
-
-
-async def fetch_timestamps() -> dict:
-    """Fetch message timestamps from the TRW signal channel."""
-    if not all([TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET]):
-        raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
-
-    browser = None
-    async with async_playwright() as p:
-        try:
-            browser, context, page = await _open_channel(p)
-            await page.wait_for_timeout(5000)
-            timestamps = await _extract_timestamps(page)
-
-            # Also try getting timestamps from DOM attributes
-            dom_times = await page.evaluate(r'''() => {
-                const results = [];
-                const els = document.querySelectorAll("*");
-                for (const el of els) {
-                    for (const attr of el.attributes) {
-                        if (/time|date|stamp/i.test(attr.name) && /\d/.test(attr.value)) {
-                            results.push({attr: attr.name, value: attr.value, tag: el.tagName, text: el.textContent.trim().substring(0, 80)});
-                        }
-                    }
-                }
-                return results;
-            }''')
-
-            # Scroll up to load older messages and capture more timestamps
-            for _ in range(5):
-                await page.keyboard.press("PageUp")
-                await page.wait_for_timeout(2000)
-
-            body_after_scroll = await page.inner_text("body")
-            more_times = re.findall(
-                r"(?:Today|Yesterday|\d{1,2}/\d{1,2}/\d{2,4})\s+(?:at\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)",
-                body_after_scroll, re.IGNORECASE,
-            )
-
-            return {
-                "visible_timestamps": timestamps,
-                "after_scroll": more_times,
-                "dom_attributes": dom_times[:30],
-            }
         finally:
             if browser:
                 await browser.close()

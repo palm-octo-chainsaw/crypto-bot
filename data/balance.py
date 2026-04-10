@@ -139,7 +139,7 @@ class Balance:
                 for entry in account_info.get("balances", [])
             }
         except Exception as err:
-            logger.error(f"Binance account fetch error: {err}")
+            logger.error("Binance account fetch error: %s", err)
             self._binance_balances = {}
 
     def refresh_binance_balances(self) -> None:
@@ -177,9 +177,9 @@ class Balance:
         try:
             result = self.kraken_client.query_private("Balance")
             if result.get("error"):
-                logger.error(f"Kraken API error: {result['error']}")
+                logger.error("Kraken API error: %s", result['error'])
                 return {}
             return result["result"]
         except Exception as err:
-            logger.error(f"Kraken balance fetch error: {err}")
+            logger.error("Kraken balance fetch error: %s", err)
             return {}

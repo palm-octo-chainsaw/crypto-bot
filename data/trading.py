@@ -3,7 +3,7 @@
 import logging
 import ccxt
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 def create_binance(api_key: str, api_secret: str):
@@ -33,11 +33,11 @@ def apply_precision(exchange, symbol: str, amount: float) -> float:
 
 def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool) -> dict:
     if dry_run:
-        log.info("[DRY RUN] %s %s on %s", side.upper(), amount, symbol)
+        logger.info("[DRY RUN] %s %s on %s", side.upper(), amount, symbol)
         return {"symbol": symbol, "side": side, "amount": amount, "dry_run": True}
-    log.info("Executing: %s %s on %s", side.upper(), amount, symbol)
+    logger.info("Executing: %s %s on %s", side.upper(), amount, symbol)
     order = exchange.create_market_order(symbol, side, amount)
-    log.info("Order filled: id=%s status=%s", order["id"], order["status"])
+    logger.info("Order filled: id=%s status=%s", order["id"], order["status"])
     return order
 
 
@@ -57,11 +57,11 @@ def execute_trade(exchange, sell_token: str, buy_token: str, sell_amount: float,
             buy_amount = apply_precision(exchange, symbol, buy_amount)
             trades.append(place_order(exchange, symbol, "buy", buy_amount, dry_run))
     else:
-        log.info("No direct pair for %s->%s, routing via %s", sell_token, buy_token, stable)
+        logger.info("No direct pair for %s->%s, routing via %s", sell_token, buy_token, stable)
 
         leg1 = find_direct_pair(exchange, sell_token, stable)
         if not leg1:
-            log.error("No pair found for %s/%s", sell_token, stable)
+            logger.error("No pair found for %s/%s", sell_token, stable)
             return trades
         sym1, side1 = leg1
         if side1 == "sell":
@@ -74,7 +74,7 @@ def execute_trade(exchange, sell_token: str, buy_token: str, sell_amount: float,
         stable_received = sell_amount * prices[sell_token]
         leg2 = find_direct_pair(exchange, stable, buy_token)
         if not leg2:
-            log.error("No pair found for %s/%s", stable, buy_token)
+            logger.error("No pair found for %s/%s", stable, buy_token)
             return trades
         sym2, side2 = leg2
         if side2 == "sell":
