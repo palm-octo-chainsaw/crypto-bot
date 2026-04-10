@@ -9,6 +9,9 @@ from utils.command_handlers import (
 
 
 if __name__ == "__main__":
+    from data.database import init_db
+    init_db()
+
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("check", check))

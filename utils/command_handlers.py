@@ -112,6 +112,9 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text("⚠️ No allocations found in signal.")
             return
 
+        from data.database import record_signal
+        record_signal(allocations)
+
         # Zero out all current targets, then apply new ones
         for symbol in portfolio.targets:
             portfolio.targets[symbol] = 0.0

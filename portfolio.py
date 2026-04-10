@@ -92,6 +92,17 @@ class Portfolio:
         self.evaluate_symbol(values, total_value)
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
+
+        from data.database import record_snapshot, get_latest_signal_id
+        record_snapshot(
+            signal_id=get_latest_signal_id(),
+            total_value_usd=total_value,
+            balances=self.portfolio,
+            prices=prices,
+            values_usd=values,
+            targets=self.targets,
+        )
+
         return self.summary.flush_summary()
 
     def execute_rebalance(self, dry_run: bool = True) -> str:
@@ -159,6 +170,25 @@ class Portfolio:
             except Exception as err:
                 logger.error("Trade error buying %s: %s", token, err)
                 results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "error": str(err)})
+
+        from data.database import record_trade, get_latest_signal_id
+        signal_id = get_latest_signal_id()
+        for trade in results:
+            token = trade.get("symbol", "").split("/")[0]
+            record_trade(
+                signal_id=signal_id,
+                symbol=trade.get("symbol", ""),
+                side=trade.get("side", ""),
+                amount=trade.get("amount", 0),
+                price=prices.get(token),
+                usd_value=trade.get("usd_value"),
+                status="dust" if trade.get("dust") else
+                       "skipped" if trade.get("skipped") else
+                       "error" if trade.get("error") else
+                       "dry_run" if trade.get("dry_run") else "filled",
+                order_id=trade.get("id"),
+                dry_run=dry_run,
+            )
 
         lines = [f"🔄 *Rebalance {mode}*\n"]
         for trade in results:
