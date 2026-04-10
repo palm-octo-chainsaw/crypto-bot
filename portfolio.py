@@ -11,8 +11,8 @@ from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD
 logger = setup_logging('info')
 
 
-def _is_tradeable(exchange, token: str, stable: str) -> bool:
-    """Check if a token has a direct or routable pair on the exchange."""
+def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
+    """Check if a token has a direct trading pair with the stable asset (in either direction)."""
     return bool(find_direct_pair(exchange, token, stable)) or \
            bool(find_direct_pair(exchange, stable, token))
 
@@ -142,7 +142,7 @@ class Portfolio:
         mode = "DRY RUN" if dry_run else "LIVE"
 
         for token, amount in sells.items():
-            if not _is_tradeable(exchange, token, stable):
+            if not _is_directly_tradeable(exchange, token, stable):
                 logger.info("Skipping %s — no Binance pair available", token)
                 results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "skipped": True})
                 continue
@@ -154,7 +154,7 @@ class Portfolio:
                 results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "error": str(err)})
 
         for token, amount in buys.items():
-            if not _is_tradeable(exchange, token, stable):
+            if not _is_directly_tradeable(exchange, token, stable):
                 logger.info("Skipping %s — no Binance pair available", token)
                 results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "skipped": True})
                 continue
