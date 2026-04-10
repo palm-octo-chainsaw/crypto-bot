@@ -1,5 +1,6 @@
 .env
 .venv/
+.trw_session/
 __pycache__/
 *.pyc
 *.log

@@ -5,3 +5,5 @@ python-dotenv==1.1.0
 python-binance==1.0.29
 krakenex
 ccxt
+playwright
+pyotp

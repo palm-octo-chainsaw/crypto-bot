@@ -1,7 +1,7 @@
 from typing import Dict, Tuple
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
-from data.trading import create_binance, execute_trade
+from data.trading import create_binance, execute_trade, find_direct_pair
 from telegram_bot import Bot
 from summary import Summary
 from data.balance import Balance
@@ -9,6 +9,15 @@ from constants import BINANCE_API_KEY, BINANCE_API_SECRET
 
 
 logger = setup_logging('info')
+
+
+def _is_tradeable(exchange, token: str, stable: str) -> bool:
+    """Check if a token can be traded on the exchange (direct or via stable)."""
+    if find_direct_pair(exchange, token, stable):
+        return True
+    # Check two-leg route: token->stable and stable->token
+    return bool(find_direct_pair(exchange, token, stable)) or \
+           bool(find_direct_pair(exchange, stable, token))
 
 
 class Portfolio:
@@ -103,45 +112,62 @@ class Portfolio:
         rebalance = self._compute_rebalance(prices, values, total_value)
 
         stable = "USDC"
-        sells = {s: abs(amt) for s, amt in rebalance.items() if amt < -1e-6 and s != stable}
-        buys = {s: amt for s, amt in rebalance.items() if amt > 1e-6 and s != stable}
+        min_trade_usd = 1.0
+        sells = {
+            symbol: abs(amount) for symbol, amount in rebalance.items()
+            if amount < -1e-6 and symbol != stable and abs(amount) * prices.get(symbol, 0) >= min_trade_usd
+        }
+        buys = {
+            symbol: amount for symbol, amount in rebalance.items()
+            if amount > 1e-6 and symbol != stable and amount * prices.get(symbol, 0) >= min_trade_usd
+        }
 
         if not sells and not buys:
             return "✅ Portfolio is balanced — no trades needed."
 
         try:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
-        except Exception as e:
-            logger.error("Failed to connect to Binance: %s", e)
-            return f"⚠️ Failed to connect to Binance: {e}"
+        except Exception as err:
+            logger.error("Failed to connect to Binance: %s", err)
+            return f"⚠️ Failed to connect to Binance: {err}"
 
         mode = "DRY RUN" if dry_run else "LIVE"
         results = []
 
         for token, amount in sells.items():
+            if not _is_tradeable(exchange, token, stable):
+                logger.info("Skipping %s — no Binance pair available", token)
+                results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "skipped": True})
+                continue
             try:
                 trades = execute_trade(exchange, token, stable, amount, prices, stable, dry_run)
                 results.extend(trades)
-            except Exception as e:
-                logger.error("Trade error selling %s: %s", token, e)
-                results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "error": str(e)})
+            except Exception as err:
+                logger.error("Trade error selling %s: %s", token, err)
+                results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "error": str(err)})
 
         for token, amount in buys.items():
+            if not _is_tradeable(exchange, token, stable):
+                logger.info("Skipping %s — no Binance pair available", token)
+                results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "skipped": True})
+                continue
             try:
                 stable_needed = amount * prices[token]
                 trades = execute_trade(exchange, stable, token, stable_needed, prices, stable, dry_run)
                 results.extend(trades)
-            except Exception as e:
-                logger.error("Trade error buying %s: %s", token, e)
-                results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "error": str(e)})
+            except Exception as err:
+                logger.error("Trade error buying %s: %s", token, err)
+                results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "error": str(err)})
 
         lines = [f"🔄 *Rebalance {mode}*\n"]
-        for t in results:
-            if "error" in t:
-                lines.append(f"❌ {t['side'].upper()} {t['symbol']}: {t['error']}")
-            elif t.get("dry_run"):
-                lines.append(f"📋 {t['side'].upper()} `{t['amount']}` {t['symbol']}")
+        for trade in results:
+            if trade.get("skipped"):
+                lines.append(f"⏭️ SKIP {trade['symbol']} — not tradeable on Binance")
+            elif "error" in trade:
+                lines.append(f"❌ {trade['side'].upper()} {trade['symbol']}: {trade['error']}")
+            elif trade.get("dry_run"):
+                lines.append(f"📋 {trade['side'].upper()} `{trade['amount']}` {trade['symbol']}")
             else:
-                lines.append(f"✅ {t['side'].upper()} `{t['amount']}` {t['symbol']} — id: {t.get('id', '?')}")
+                lines.append(f"✅ {trade['side'].upper()} `{trade['amount']}` {trade['symbol']} — id: {trade.get('id', '?')}")
 
         return "\n".join(lines)

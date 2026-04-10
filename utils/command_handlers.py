@@ -19,6 +19,7 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("set_target", "Set target % for a token (e.g. /set_target BTC 40)"),
         BotCommand("total", "Get total portfolio value"),
         BotCommand("rebalance", "Dry-run rebalance (/rebalance live to execute real trades)"),
+        BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
     ])
 
 
@@ -90,3 +91,34 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⚠️ *LIVE MODE* — executing real trades on Binance...", parse_mode="Markdown")
     message = portfolio.execute_rebalance(dry_run=not live)
     await update.message.reply_text(format_message(message), parse_mode="Markdown")
+
+
+async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from data.scraper import fetch_signal as scrape_signal
+
+    await update.message.reply_text("🔍 Fetching latest RSPS signal from TRW...")
+
+    try:
+        allocations = await scrape_signal()
+
+        if not allocations:
+            await update.message.reply_text("⚠️ No allocations found in signal.")
+            return
+
+        # Zero out all current targets, then apply new ones
+        for symbol in portfolio.targets:
+            portfolio.targets[symbol] = 0.0
+        for symbol, pct in allocations.items():
+            portfolio.targets[symbol] = pct
+
+        write_json(TARGETS_FILE, portfolio.targets)
+
+        message = "✅ *Targets updated from RSPS Signal*\n\n"
+        for symbol, pct in allocations.items():
+            message += f"{symbol}: {pct}%\n"
+        message += f"\nTotal: {sum(allocations.values())}%"
+
+        await update.message.reply_text(format_message(message), parse_mode="Markdown")
+
+    except Exception as error:
+        await update.message.reply_text(f"⚠️ Error fetching signal: {error}", parse_mode="Markdown")
