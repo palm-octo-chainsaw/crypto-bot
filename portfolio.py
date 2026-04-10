@@ -110,14 +110,19 @@ class Portfolio:
 
         stable = "USDC"
         min_trade_usd = 1.0
-        sells = {
-            symbol: abs(amount) for symbol, amount in rebalance.items()
-            if amount < -1e-6 and symbol != stable and abs(amount) * prices.get(symbol, 0) >= min_trade_usd
-        }
-        buys = {
-            symbol: amount for symbol, amount in rebalance.items()
-            if amount > 1e-6 and symbol != stable and amount * prices.get(symbol, 0) >= min_trade_usd
-        }
+        sells = {}
+        buys = {}
+        for symbol, amount in rebalance.items():
+            if symbol == stable:
+                continue
+            if symbol not in prices:
+                logger.warning("No price data for %s — skipping", symbol)
+                continue
+            usd_value = abs(amount) * prices[symbol]
+            if amount < -1e-6 and usd_value >= min_trade_usd:
+                sells[symbol] = abs(amount)
+            elif amount > 1e-6 and usd_value >= min_trade_usd:
+                buys[symbol] = amount
 
         if not sells and not buys:
             return "✅ Portfolio is balanced — no trades needed."

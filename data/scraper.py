@@ -180,15 +180,16 @@ async def _extract_timestamps(page) -> list[str]:
 
 
 async def _open_channel(p, *, save_session: bool = True):
-    """Open TRW channel, handling login and device limits. Returns (browser, page)."""
+    """Open signal channel, handling login and device limits. Returns (browser, context, page)."""
     session_path = os.path.abspath(SESSION_DIR)
+    state_file = os.path.join(session_path, "state.json")
 
     # Try reusing saved session first
-    if os.path.isdir(session_path):
+    if os.path.isfile(state_file):
         logger.info("[TRW] Reusing saved session...")
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            storage_state=os.path.join(session_path, "state.json"),
+            storage_state=state_file,
             viewport={"width": 1280, "height": 900},
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -232,7 +233,7 @@ async def _open_channel(p, *, save_session: bool = True):
     # Save session for reuse
     if save_session:
         os.makedirs(session_path, exist_ok=True)
-        await context.storage_state(path=os.path.join(session_path, "state.json"))
+        await context.storage_state(path=state_file)
         logger.info("[TRW] Session saved to %s", session_path)
 
     return browser, context, page
