@@ -155,18 +155,32 @@ async def _handle_device_limit(page) -> None:
     logger.info("[TRW] Device limit resolved")
 
 
-async def _extract_signal(page) -> dict[str, float]:
+async def _extract_timestamp(element) -> str | None:
+    """Extract the posted-at timestamp from a TRW chat message element."""
+    loc = element.locator("span.opacity-50")
+    if await loc.count() > 0:
+        text = (await loc.first.inner_text()).strip()
+        if text:
+            return text
+    return None
+
+
+async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     """Extract RSPS signal from the loaded channel page."""
     messages = page.locator('[class*="message"], [class*="chat"], [class*="post"]')
     count = await messages.count()
     logger.info("[TRW] Found %d message elements", count)
 
     signal_text = None
+    signal_time = None
+    signal_element = None
     for idx in range(count - 1, max(count - 20, -1), -1):
         text = await messages.nth(idx).inner_text()
         if "rsps signal" in text.lower():
             signal_text = text
-            logger.info("[TRW] Found signal message at index %d", idx)
+            signal_element = messages.nth(idx)
+            signal_time = await _extract_timestamp(signal_element)
+            logger.info("[TRW] Found signal message at index %d (posted: %s)", idx, signal_time)
             break
 
     if not signal_text:
@@ -185,7 +199,7 @@ async def _extract_signal(page) -> dict[str, float]:
         raise RuntimeError(f"Found signal text but could not parse allocations:\n{signal_text[:300]}")
 
     logger.info("[TRW] Parsed allocations: %s", allocations)
-    return allocations
+    return allocations, signal_time
 
 
 async def _open_channel(p, *, save_session: bool = True):
@@ -248,7 +262,7 @@ async def _open_channel(p, *, save_session: bool = True):
     return browser, context, page
 
 
-async def fetch_signal() -> dict[str, float]:
+async def fetch_signal() -> tuple[dict[str, float], str | None]:
     if not all([TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET]):
         raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
 

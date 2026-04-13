@@ -106,7 +106,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("🔍 Fetching latest RSPS signal from TRW...")
 
     try:
-        allocations = await scrape_signal()
+        allocations, signal_time = await scrape_signal()
 
         if not allocations:
             await update.message.reply_text("⚠️ No allocations found in signal.")
@@ -123,7 +123,10 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         write_json(TARGETS_FILE, portfolio.targets)
 
-        message = "✅ *Targets updated from RSPS Signal*\n\n"
+        message = "✅ *Targets updated from RSPS Signal*\n"
+        if signal_time:
+            message += f"🕐 Signal posted: {signal_time}\n"
+        message += "\n"
         for symbol, pct in allocations.items():
             message += f"{symbol}: {pct}%\n"
         message += f"\nTotal: {sum(allocations.values())}%"
