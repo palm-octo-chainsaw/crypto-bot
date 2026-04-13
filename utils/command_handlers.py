@@ -150,8 +150,14 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(update, _format_signal_message(allocations, signal_time))
 
 
+SCRAPE_FAILURE_ALERT_THRESHOLD = 3
+_scrape_failure_count = 0
+
+
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
+    global _scrape_failure_count
+
     if not CHAT_ID:
         logger.warning("CHAT_ID not set — poll_signal cannot send notifications")
         return
@@ -159,8 +165,29 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         allocations, signal_time = await scrape_signal()
     except Exception as error:
-        logger.error("poll_signal scrape failed: %s", error, exc_info=True)
+        _scrape_failure_count += 1
+        logger.error(
+            "poll_signal scrape failed (%d consecutive): %s",
+            _scrape_failure_count, error, exc_info=True,
+        )
+        if _scrape_failure_count == SCRAPE_FAILURE_ALERT_THRESHOLD:
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=(
+                    f"⚠️ *TRW scrape failing* — {_scrape_failure_count} consecutive errors.\n"
+                    f"Auto-rebalance is paused. Check logs or run /fetch_signal manually."
+                ),
+                parse_mode="Markdown",
+            )
         return
+
+    if _scrape_failure_count >= SCRAPE_FAILURE_ALERT_THRESHOLD:
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text="✅ TRW scrape recovered.",
+            parse_mode="Markdown",
+        )
+    _scrape_failure_count = 0
 
     if not allocations:
         return
