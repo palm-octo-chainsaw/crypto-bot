@@ -141,3 +141,11 @@ def get_latest_signal_id() -> int | None:
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
+
+
+def get_latest_allocations() -> dict | None:
+    conn = get_connection()
+    cursor = conn.execute("SELECT allocations FROM signals ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+    conn.close()
+    return json.loads(row[0]) if row else None

@@ -1,7 +1,7 @@
-from typing import Dict, Tuple
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
 from data.trading import create_binance, execute_trade, find_direct_pair
+from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
 from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD, REBALANCE_RESERVE_PCT
@@ -9,11 +9,42 @@ from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD, REBALA
 
 logger = setup_logging('info')
 
+STABLE = "USDC"
+REBALANCE_THRESHOLD_PCT = 3.0
+
 
 def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
-    """Check if a token has a direct trading pair with the stable asset (in either direction)."""
     return bool(find_direct_pair(exchange, token, stable)) or \
            bool(find_direct_pair(exchange, stable, token))
+
+
+def _trade_status(trade: dict) -> str:
+    if trade.get("dust"):
+        return "dust"
+    if trade.get("skipped"):
+        return "skipped"
+    if trade.get("error"):
+        return "error"
+    if trade.get("dry_run"):
+        return "dry_run"
+    return "filled"
+
+
+def _format_trade_line(trade: dict) -> str:
+    status = _trade_status(trade)
+    symbol = trade["symbol"]
+    side = trade.get("side", "").upper()
+    amount = trade.get("amount")
+
+    if status == "dust":
+        return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum"
+    if status == "skipped":
+        return f"⏭️ SKIP {symbol} — not tradeable on Binance"
+    if status == "error":
+        return f"❌ {side} {symbol}: trade failed (see logs)"
+    if status == "dry_run":
+        return f"📋 {side} `{amount}` {symbol}"
+    return f"✅ {side} `{amount}` {symbol} — id: {trade.get('id', '?')}"
 
 
 class Portfolio:
@@ -24,10 +55,10 @@ class Portfolio:
         self.portfolio: dict = self.balance.get_spot_balance()
         self.send_rebalance: bool = False
 
-    def get_targets(self) -> Dict[str, int]:
+    def get_targets(self) -> dict:
         return self.targets
 
-    def set_target(self, symbol: str, percent: int) -> Dict[str, int]:
+    def set_target(self, symbol: str, percent: int) -> dict:
         self.targets[symbol] = percent
         logger.debug("Target for %s set to %d%%", symbol, percent)
         return self.targets
@@ -37,12 +68,9 @@ class Portfolio:
         self.portfolio = self.balance.get_spot_balance()
         logger.debug("Portfolio updated: %s", self.portfolio)
 
-    def fetch_live_data(self) -> Tuple[dict, dict, float]:
+    def fetch_live_data(self) -> tuple[dict, dict, float]:
         prices = fetch_prices(list(self.portfolio))
-        values = {
-            symbol: amount * prices[symbol]
-            for symbol, amount in self.portfolio.items()
-        }
+        values = {symbol: amount * prices[symbol] for symbol, amount in self.portfolio.items()}
         total_value = sum(values.values())
         logger.debug("Total: %s", total_value)
         return prices, values, total_value
@@ -52,27 +80,28 @@ class Portfolio:
             current_pct = (value / total_value) * 100
             target_pct = int(self.targets[symbol])
             diff = current_pct - target_pct
+            arrow = "🔺" if diff > 0 else "🔻"
 
-            msg = f"${symbol}: {current_pct:.2f}% (Target: {target_pct}%) {'🔺' if diff > 0 else '🔻'} {diff:.2f}%"
-            logger.debug(msg)
-            self.summary.add_summary(msg)
+            self.summary.add_summary(
+                f"${symbol}: {current_pct:.2f}% (Target: {target_pct}%) {arrow} {diff:.2f}%"
+            )
 
-            if abs(diff) > 3:
-                msg = f"⚠️ *Rebalance Needed*: ${symbol} is off by {diff:+.2f}% " \
-                      f"(Current: {current_pct:.2f}%; Target: {target_pct}%)"
-                self.summary.add_rebalance(msg)
-                logger.debug("⚠️ %s is off by %.2f%% — consider rebalancing", symbol, diff)
+            if abs(diff) > REBALANCE_THRESHOLD_PCT:
+                self.summary.add_rebalance(
+                    f"⚠️ *Rebalance Needed*: ${symbol} is off by {diff:+.2f}% "
+                    f"(Current: {current_pct:.2f}%; Target: {target_pct}%)"
+                )
                 self.send_rebalance = True
 
-    def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> Dict[str, float]:
+    def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
         usable_value = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
         return {
-            symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol])
-                    / prices[symbol] if prices[symbol] > 0 else 0.0
+            symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol]) / prices[symbol]
+                    if prices[symbol] > 0 else 0.0
             for symbol in self.portfolio
         }
 
-    def calculate_rebalance(self, prices: dict, values: dict, total_value: float) -> Dict[str, float]:
+    def calculate_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
         rebalance = self._compute_rebalance(prices, values, total_value)
 
         self.summary.add_rebalance("\n🧮 *Rebalance Plan*\n")
@@ -80,9 +109,9 @@ class Portfolio:
             if abs(amount) < 1e-6:
                 continue
             action = "Buy" if amount > 0 else "Sell"
+            sign = "-" if action == "Sell" else ""
             self.summary.add_rebalance(
-                f"{action} [{abs(amount):.8f}] ${symbol} | "
-                f"{'-' if action == 'Sell' else ''}${abs(amount * prices[symbol]):.2f} USD"
+                f"{action} [{abs(amount):.8f}] ${symbol} | {sign}${abs(amount * prices[symbol]):.2f} USD"
             )
         return rebalance
 
@@ -94,7 +123,6 @@ class Portfolio:
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
 
-        from data.database import record_snapshot, get_latest_signal_id
         record_snapshot(
             signal_id=get_latest_signal_id(),
             total_value_usd=total_value,
@@ -103,8 +131,73 @@ class Portfolio:
             values_usd=values,
             targets=self.targets,
         )
-
         return self.summary.flush_summary()
+
+    def _plan_trades(self, rebalance: dict, prices: dict) -> tuple[dict, dict, list]:
+        """Classify rebalance amounts into sells, buys, and dust trades."""
+        sells, buys, dust = {}, {}, []
+        for symbol, amount in rebalance.items():
+            if symbol == STABLE or abs(amount) < 1e-6:
+                continue
+            if symbol not in prices:
+                logger.warning("No price data for %s — skipping", symbol)
+                continue
+
+            usd_value = abs(amount) * prices[symbol]
+            side = "sell" if amount < 0 else "buy"
+
+            if usd_value < MIN_TRADE_USD:
+                logger.info("Trade for %s ($%.2f) below minimum $%.2f — skipping", symbol, usd_value, MIN_TRADE_USD)
+                dust.append({"symbol": symbol, "side": side, "amount": amount, "usd_value": usd_value, "dust": True})
+            elif amount < 0:
+                sells[symbol] = abs(amount)
+            else:
+                buys[symbol] = amount
+        return sells, buys, dust
+
+    def _execute_side(self, exchange, tokens: dict, side: str, prices: dict, dry_run: bool) -> list:
+        """Execute all trades on one side (sells or buys). Returns result dicts."""
+        results = []
+        for token, amount in tokens.items():
+            pair_display = f"{token}/{STABLE}" if side == "sell" else f"{STABLE}/{token}"
+
+            if not _is_directly_tradeable(exchange, token, STABLE):
+                logger.info("Skipping %s — no Binance pair available", token)
+                results.append({"symbol": pair_display, "side": side, "amount": amount, "skipped": True})
+                continue
+
+            try:
+                if side == "sell":
+                    results.extend(execute_trade(exchange, token, STABLE, amount, prices, STABLE, dry_run))
+                else:
+                    stable_needed = amount * prices[token]
+                    results.extend(execute_trade(exchange, STABLE, token, stable_needed, prices, STABLE, dry_run))
+            except Exception as err:
+                logger.error("Trade error on %s %s: %s", side, token, err)
+                results.append({"symbol": pair_display, "side": side, "amount": amount, "error": str(err)})
+        return results
+
+    def _persist_trades(self, results: list, prices: dict) -> None:
+        signal_id = get_latest_signal_id()
+        for trade in results:
+            status = _trade_status(trade)
+            if status not in ("filled", "error"):
+                continue
+            token = trade.get("symbol", "").split("/")[0]
+            record_trade(
+                signal_id=signal_id,
+                symbol=trade.get("symbol", ""),
+                side=trade.get("side", ""),
+                amount=trade.get("amount", 0),
+                price=prices.get(token),
+                usd_value=trade.get("usd_value"),
+                status=status,
+                order_id=trade.get("id"),
+                dry_run=False,
+                fee_amount=trade.get("fee_amount"),
+                fee_currency=trade.get("fee_currency"),
+                fee_rate=trade.get("fee_rate"),
+            )
 
     def execute_rebalance(self, dry_run: bool = True) -> str:
         if not BINANCE_API_KEY or not BINANCE_API_SECRET:
@@ -114,28 +207,7 @@ class Portfolio:
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
 
-        stable = "USDC"
-        sells = {}
-        buys = {}
-        results = []
-        for symbol, amount in rebalance.items():
-            if symbol == stable:
-                continue
-            if symbol not in prices:
-                logger.warning("No price data for %s — skipping", symbol)
-                continue
-            usd_value = abs(amount) * prices[symbol]
-            if abs(amount) < 1e-6:
-                continue
-            if usd_value < MIN_TRADE_USD:
-                logger.info("Trade for %s ($%.2f) below minimum $%.2f — skipping", symbol, usd_value, MIN_TRADE_USD)
-                results.append({"symbol": symbol, "side": "sell" if amount < 0 else "buy", "amount": amount, "usd_value": usd_value, "dust": True})
-                continue
-            if amount < 0:
-                sells[symbol] = abs(amount)
-            else:
-                buys[symbol] = amount
-
+        sells, buys, dust = self._plan_trades(rebalance, prices)
         if not sells and not buys:
             return "✅ Portfolio is balanced — no trades needed."
 
@@ -145,66 +217,13 @@ class Portfolio:
             logger.error("Failed to connect to Binance: %s", err)
             return "⚠️ Failed to connect to Binance. Check logs for details."
 
+        results = dust
+        results.extend(self._execute_side(exchange, sells, "sell", prices, dry_run))
+        results.extend(self._execute_side(exchange, buys, "buy", prices, dry_run))
+
+        if not dry_run:
+            self._persist_trades(results, prices)
+
         mode = "DRY RUN" if dry_run else "LIVE"
-
-        for token, amount in sells.items():
-            if not _is_directly_tradeable(exchange, token, stable):
-                logger.info("Skipping %s — no Binance pair available", token)
-                results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "skipped": True})
-                continue
-            try:
-                trades = execute_trade(exchange, token, stable, amount, prices, stable, dry_run)
-                results.extend(trades)
-            except Exception as err:
-                logger.error("Trade error selling %s: %s", token, err)
-                results.append({"symbol": f"{token}/{stable}", "side": "sell", "amount": amount, "error": str(err)})
-
-        for token, amount in buys.items():
-            if not _is_directly_tradeable(exchange, token, stable):
-                logger.info("Skipping %s — no Binance pair available", token)
-                results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "skipped": True})
-                continue
-            try:
-                stable_needed = amount * prices[token]
-                trades = execute_trade(exchange, stable, token, stable_needed, prices, stable, dry_run)
-                results.extend(trades)
-            except Exception as err:
-                logger.error("Trade error buying %s: %s", token, err)
-                results.append({"symbol": f"{stable}/{token}", "side": "buy", "amount": amount, "error": str(err)})
-
-        from data.database import record_trade, get_latest_signal_id
-        signal_id = get_latest_signal_id()
-        for trade in results:
-            token = trade.get("symbol", "").split("/")[0]
-            record_trade(
-                signal_id=signal_id,
-                symbol=trade.get("symbol", ""),
-                side=trade.get("side", ""),
-                amount=trade.get("amount", 0),
-                price=prices.get(token),
-                usd_value=trade.get("usd_value"),
-                status="dust" if trade.get("dust") else
-                       "skipped" if trade.get("skipped") else
-                       "error" if trade.get("error") else
-                       "dry_run" if trade.get("dry_run") else "filled",
-                order_id=trade.get("id"),
-                dry_run=dry_run,
-                fee_amount=trade.get("fee_amount"),
-                fee_currency=trade.get("fee_currency"),
-                fee_rate=trade.get("fee_rate"),
-            )
-
-        lines = [f"🔄 *Rebalance {mode}*\n"]
-        for trade in results:
-            if trade.get("dust"):
-                lines.append(f"🔸 DUST {trade['symbol']} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum")
-            elif trade.get("skipped"):
-                lines.append(f"⏭️ SKIP {trade['symbol']} — not tradeable on Binance")
-            elif "error" in trade:
-                lines.append(f"❌ {trade['side'].upper()} {trade['symbol']}: trade failed (see logs)")
-            elif trade.get("dry_run"):
-                lines.append(f"📋 {trade['side'].upper()} `{trade['amount']}` {trade['symbol']}")
-            else:
-                lines.append(f"✅ {trade['side'].upper()} `{trade['amount']}` {trade['symbol']} — id: {trade.get('id', '?')}")
-
+        lines = [f"🔄 *Rebalance {mode}*\n"] + [_format_trade_line(t) for t in results]
         return "\n".join(lines)
