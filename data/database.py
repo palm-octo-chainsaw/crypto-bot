@@ -52,9 +52,18 @@ def init_db() -> None:
             status TEXT NOT NULL,
             order_id TEXT,
             dry_run INTEGER NOT NULL,
+            fee_amount REAL,
+            fee_currency TEXT,
+            fee_rate REAL,
             FOREIGN KEY (signal_id) REFERENCES signals(id)
         );
     """)
+    # Migrate existing databases that lack the fee columns.
+    for col, col_type in [("fee_amount", "REAL"), ("fee_currency", "TEXT"), ("fee_rate", "REAL")]:
+        try:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.close()
     logger.info("Database initialized at %s", DB_PATH)
 
@@ -97,12 +106,15 @@ def record_snapshot(signal_id: int | None, total_value_usd: float,
 
 def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  price: float | None, usd_value: float | None, status: str,
-                 order_id: str | None, dry_run: bool) -> None:
+                 order_id: str | None, dry_run: bool,
+                 fee_amount: float | None = None, fee_currency: str | None = None,
+                 fee_rate: float | None = None) -> None:
     conn = get_connection()
     conn.execute(
         """INSERT INTO trades
-           (timestamp, signal_id, symbol, side, amount, price, usd_value, status, order_id, dry_run)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           (timestamp, signal_id, symbol, side, amount, price, usd_value,
+            status, order_id, dry_run, fee_amount, fee_currency, fee_rate)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             datetime.now(timezone.utc).isoformat(),
             signal_id,
@@ -114,6 +126,9 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
             status,
             order_id,
             1 if dry_run else 0,
+            fee_amount,
+            fee_currency,
+            fee_rate,
         ),
     )
     conn.commit()

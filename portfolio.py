@@ -4,7 +4,7 @@ from data.prices import fetch_prices
 from data.trading import create_binance, execute_trade, find_direct_pair
 from summary import Summary
 from data.balance import Balance
-from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD
+from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD, REBALANCE_RESERVE_PCT
 
 
 logger = setup_logging('info')
@@ -65,8 +65,9 @@ class Portfolio:
                 self.send_rebalance = True
 
     def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> Dict[str, float]:
+        usable_value = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
         return {
-            symbol: ((self.targets[symbol] / 100) * total_value - values[symbol])
+            symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol])
                     / prices[symbol] if prices[symbol] > 0 else 0.0
             for symbol in self.portfolio
         }
@@ -188,6 +189,9 @@ class Portfolio:
                        "dry_run" if trade.get("dry_run") else "filled",
                 order_id=trade.get("id"),
                 dry_run=dry_run,
+                fee_amount=trade.get("fee_amount"),
+                fee_currency=trade.get("fee_currency"),
+                fee_rate=trade.get("fee_rate"),
             )
 
         lines = [f"🔄 *Rebalance {mode}*\n"]

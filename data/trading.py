@@ -37,7 +37,12 @@ def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool) 
         return {"symbol": symbol, "side": side, "amount": amount, "dry_run": True}
     logger.info("Executing: %s %s on %s", side.upper(), amount, symbol)
     order = exchange.create_market_order(symbol, side, amount)
-    logger.info("Order filled: id=%s status=%s", order["id"], order["status"])
+    fee = order.get("fee") or {}
+    order["fee_amount"] = fee.get("cost")
+    order["fee_currency"] = fee.get("currency")
+    order["fee_rate"] = fee.get("rate")
+    logger.info("Order filled: id=%s status=%s fee=%s %s",
+                order["id"], order["status"], order["fee_amount"], order["fee_currency"])
     return order
 
 
