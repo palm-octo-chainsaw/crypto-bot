@@ -11,6 +11,7 @@ from constants import TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET, TRW_SIGNAL_URL
 
 logger = logging.getLogger(__name__)
 
+SIGNAL_MARKER = "rsps signal"
 ALLOCATION_LINE = re.compile(r"([\d.]+)%\s+(\w+)", re.IGNORECASE)
 CASH_ALIASES = {"cash", "usd", "stables", "stable"}
 KNOWN_TOKENS = {
@@ -30,7 +31,7 @@ def parse_signal(text: str) -> dict[str, float]:
     lower = text.lower()
     # Use rfind so correction messages that quote the original signal at the top
     # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
-    start = lower.rfind("rsps signal")
+    start = lower.rfind(SIGNAL_MARKER)
     if start == -1:
         return {}
 
@@ -178,7 +179,7 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     signal_element = None
     for idx in range(count - 1, max(count - 20, -1), -1):
         text = await messages.nth(idx).inner_text()
-        if "rsps signal" in text.lower():
+        if SIGNAL_MARKER in text.lower():
             signal_text = text
             signal_element = messages.nth(idx)
             signal_time = await _extract_timestamp(signal_element)
@@ -187,8 +188,8 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
 
     if not signal_text:
         body_text = await page.inner_text("body")
-        if "rsps signal" in body_text.lower():
-            start = body_text.lower().index("rsps signal")
+        if SIGNAL_MARKER in body_text.lower():
+            start = body_text.lower().index(SIGNAL_MARKER)
             signal_text = body_text[start:]
             logger.info("[TRW] Found signal in page body text")
 
