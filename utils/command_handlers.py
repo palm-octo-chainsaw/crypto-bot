@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 from telegram import Update, BotCommand
 from telegram.ext import ContextTypes, ExtBot, Application
@@ -16,6 +17,11 @@ portfolio = Portfolio()
 TARGETS_FILE = "config/targets.json"
 GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
 
+_last_poll_time: datetime | None = None
+_last_poll_status: str = "not yet run"
+_poll_success_count: int = 0
+_poll_failure_count: int = 0
+
 
 async def set_bot_commands(bot: ExtBot) -> None:
     await bot.set_my_commands([
@@ -27,11 +33,31 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("total", "Get total portfolio value"),
         BotCommand("rebalance", "Dry-run rebalance (/rebalance live to execute real trades)"),
         BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
+        BotCommand("status", "Show scheduled poller status"),
     ])
 
 
 async def post_init(application: Application) -> None:
     await set_bot_commands(application.bot)
+    if CHAT_ID:
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text="🟢 *Bot online* — polling TRW every 10 min between 00:00–00:50 UTC",
+            parse_mode="Markdown",
+        )
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
+    message = (
+        f"📡 *Poller Status*\n\n"
+        f"Schedule: every 10 min, 00:00–00:50 UTC\n"
+        f"Last poll: {last}\n"
+        f"Last result: {_last_poll_status}\n"
+        f"Successes: {_poll_success_count}\n"
+        f"Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})"
+    )
+    await _reply(update, message)
 
 
 async def _reply(update: Update, message: str, *, formatted: bool = True) -> None:
@@ -156,16 +182,21 @@ _scrape_failure_count = 0
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
-    global _scrape_failure_count
+    global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count
+
+    _last_poll_time = datetime.now(timezone.utc)
 
     if not CHAT_ID:
         logger.warning("CHAT_ID not set — poll_signal cannot send notifications")
+        _last_poll_status = "skipped (no CHAT_ID)"
         return
 
     try:
         allocations, signal_time = await scrape_signal()
     except Exception as error:
         _scrape_failure_count += 1
+        _poll_failure_count += 1
+        _last_poll_status = f"scrape failed: {type(error).__name__}"
         logger.error(
             "poll_signal scrape failed (%d consecutive): %s",
             _scrape_failure_count, error, exc_info=True,
@@ -188,18 +219,22 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="Markdown",
         )
     _scrape_failure_count = 0
+    _poll_success_count += 1
 
     if not allocations:
+        _last_poll_status = "no allocations parsed"
         return
 
     previous = get_latest_allocations()
     if previous and _allocations_match(previous, allocations):
         logger.info("poll_signal: no change in allocations")
+        _last_poll_status = "no change"
         return
 
     logger.info("poll_signal: new signal detected, applying and rebalancing")
     record_signal(allocations)
     _apply_allocations(allocations)
+    _last_poll_status = "new signal detected"
 
     await context.bot.send_message(
         chat_id=CHAT_ID,
@@ -211,6 +246,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         result = portfolio.execute_rebalance(dry_run=False)
     except Exception as error:
         logger.error("poll_signal rebalance failed: %s", error, exc_info=True)
+        _last_poll_status = "rebalance failed"
         await context.bot.send_message(
             chat_id=CHAT_ID,
             text="⚠️ Auto-rebalance failed. Check logs for details.",
