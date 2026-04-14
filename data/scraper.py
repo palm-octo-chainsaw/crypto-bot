@@ -28,7 +28,9 @@ DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
 
 def parse_signal(text: str) -> dict[str, float]:
     lower = text.lower()
-    start = lower.find("rsps signal")
+    # Use rfind so correction messages that quote the original signal at the top
+    # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
+    start = lower.rfind("rsps signal")
     if start == -1:
         return {}
 
