@@ -42,7 +42,7 @@ async def post_init(application: Application) -> None:
     if CHAT_ID:
         await application.bot.send_message(
             chat_id=CHAT_ID,
-            text="🟢 *Bot online* — polling TRW every 10 min between 00:00–00:50 UTC",
+            text="🟢 *Bot online* — polling TRW every 10 min",
             parse_mode="Markdown",
         )
 
@@ -51,7 +51,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
     message = (
         f"📡 *Poller Status*\n\n"
-        f"Schedule: every 10 min, 00:00–00:50 UTC\n"
+        f"Schedule: every 10 min\n"
         f"Last poll: {last}\n"
         f"Last result: {_last_poll_status}\n"
         f"Successes: {_poll_success_count}\n"
