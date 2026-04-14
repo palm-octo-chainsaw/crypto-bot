@@ -1,10 +1,6 @@
 import datetime as dt
-import logging
 
 from telegram.ext import ApplicationBuilder, CommandHandler
-
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from constants import BOT_TOKEN
 from utils.command_handlers import (
