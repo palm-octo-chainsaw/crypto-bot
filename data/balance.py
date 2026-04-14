@@ -16,14 +16,29 @@ logger = logging.getLogger(__name__)
 class Balance:
     ARBITRUM_RPC = "https://arbitrum-one-rpc.publicnode.com"
 
-    ERC20_ABI = [{"constant": True, "inputs": [{"name": "_owner", "type": "address"}], "name": "balanceOf",
-                  "outputs": [{"name": "balance", "type": "uint256"}], "type": "function"},
-                 {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "",
-                                                                                   "type": "uint8"}],
-                  "type": "function"},
-                 {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "",
-                                                                                 "type": "string"}],
-                  "type": "function"}]
+    ERC20_ABI = [
+        {
+            "constant": True,
+            "type": "function",
+            "name": "balanceOf",
+            "inputs": [{"name": "_owner", "type": "address"}],
+            "outputs": [{"name": "balance", "type": "uint256"}],
+        },
+        {
+            "constant": True,
+            "type": "function",
+            "name": "decimals",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "uint8"}],
+        },
+        {
+            "constant": True,
+            "type": "function",
+            "name": "symbol",
+            "inputs": [],
+            "outputs": [{"name": "", "type": "string"}],
+        },
+    ]
 
     KRAKEN_SYMBOL_MAP = {
         "BTC":  "XXBT",

@@ -4,8 +4,11 @@ from constants import BOT_TOKEN
 from utils.command_handlers import (
     post_init, check, set_target,
     get_targets, get_total, get_spot_balance,
-    get_leverage_balance, rebalance, fetch_signal
+    get_leverage_balance, rebalance, fetch_signal, poll_signal,
 )
+
+
+SIGNAL_POLL_INTERVAL_SECONDS = 600  # 10 minutes
 
 
 if __name__ == "__main__":
@@ -22,5 +25,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("total", get_total))
     app.add_handler(CommandHandler("rebalance", rebalance))
     app.add_handler(CommandHandler("fetch_signal", fetch_signal))
+
+    app.job_queue.run_repeating(poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=30)
 
     app.run_polling()
