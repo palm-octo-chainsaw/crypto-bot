@@ -203,20 +203,22 @@ class Portfolio:
                 fee_rate=trade.get("fee_rate"),
             )
 
+    HYPE_PAIR = "HYPE/USDC"
+
     def _execute_hype(self, amount: float, side: str, prices: dict, dry_run: bool) -> list:
         """Execute HYPE trade on Hyperliquid. Returns result dicts."""
         if not HYPERLIQUID_PRIVATE_KEY or not HYPERLIQUID_ACCOUNT_ADDRESS:
             logger.warning("Hyperliquid credentials not set — skipping HYPE trade")
-            return [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "skipped": True}]
+            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "skipped": True}]
 
         try:
             hl = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
             hl.hyperliquid_user = META_MASK
         except Exception as err:
             logger.error("Failed to connect to Hyperliquid: %s", err)
-            return [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "error": str(err)}]
+            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "error": str(err)}]
 
-        symbol = "HYPE/USDC"
+        symbol = self.HYPE_PAIR
         try:
             trade_amount = apply_precision(hl, symbol, abs(amount))
             hype_price = prices.get("HYPE")
