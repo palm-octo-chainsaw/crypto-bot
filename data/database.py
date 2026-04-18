@@ -25,7 +25,8 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
             allocations TEXT NOT NULL,
-            total_pct REAL NOT NULL
+            total_pct REAL NOT NULL,
+            message_timestamp TEXT
         );
 
         CREATE TABLE IF NOT EXISTS snapshots (
@@ -58,27 +59,33 @@ def init_db() -> None:
             FOREIGN KEY (signal_id) REFERENCES signals(id)
         );
     """)
-    # Migrate existing databases that lack the fee columns.
-    for col, col_type in [("fee_amount", "REAL"), ("fee_currency", "TEXT"), ("fee_rate", "REAL")]:
+    # Migrate existing databases that lack newer columns.
+    for table, col, col_type in [
+        ("trades", "fee_amount", "REAL"),
+        ("trades", "fee_currency", "TEXT"),
+        ("trades", "fee_rate", "REAL"),
+        ("signals", "message_timestamp", "TEXT"),
+    ]:
         try:
-            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass  # Column already exists
     conn.close()
     logger.info("Database initialized at %s", DB_PATH)
 
 
-def record_signal(allocations: dict) -> int:
+def record_signal(allocations: dict, message_timestamp: str | None = None) -> int:
     conn = get_connection()
     total_pct = sum(allocations.values())
     cursor = conn.execute(
-        "INSERT INTO signals (timestamp, allocations, total_pct) VALUES (?, ?, ?)",
-        (datetime.now(timezone.utc).isoformat(), json.dumps(allocations), total_pct),
+        "INSERT INTO signals (timestamp, allocations, total_pct, message_timestamp) VALUES (?, ?, ?, ?)",
+        (datetime.now(timezone.utc).isoformat(), json.dumps(allocations), total_pct, message_timestamp),
     )
     signal_id = cursor.lastrowid
     conn.commit()
     conn.close()
-    logger.info("Recorded signal id=%d with %d assets totaling %.1f%%", signal_id, len(allocations), total_pct)
+    logger.info("Recorded signal id=%d with %d assets totaling %.1f%% (msg_time=%s)",
+                signal_id, len(allocations), total_pct, message_timestamp)
     return signal_id
 
 
@@ -149,3 +156,11 @@ def get_latest_allocations() -> dict | None:
     row = cursor.fetchone()
     conn.close()
     return json.loads(row[0]) if row else None
+
+
+def get_latest_message_timestamp() -> str | None:
+    conn = get_connection()
+    cursor = conn.execute("SELECT message_timestamp FROM signals ORDER BY id DESC LIMIT 1")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
