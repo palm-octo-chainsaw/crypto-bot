@@ -187,11 +187,11 @@ class Portfolio:
             status = _trade_status(trade)
             if status not in ("filled", "error"):
                 continue
-            token = trade.get("symbol", "").split("/")[0]
+            token = (trade.get("symbol") or "").split("/")[0]
             record_trade(
                 signal_id=signal_id,
-                symbol=trade.get("symbol", ""),
-                side=trade.get("side", ""),
+                symbol=trade.get("symbol") or "",
+                side=trade.get("side") or "",
                 amount=trade.get("amount", 0),
                 price=prices.get(token),
                 usd_value=trade.get("usd_value"),
