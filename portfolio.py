@@ -1,10 +1,14 @@
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
-from data.trading import create_binance, execute_trade, find_direct_pair
+from data.trading import create_binance, create_hyperliquid, execute_trade, find_direct_pair, place_order, apply_precision
 from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
-from constants import BINANCE_API_KEY, BINANCE_API_SECRET, MIN_TRADE_USD, REBALANCE_RESERVE_PCT
+from constants import (
+    BINANCE_API_KEY, BINANCE_API_SECRET,
+    HYPERLIQUID_PRIVATE_KEY, HYPERLIQUID_ACCOUNT_ADDRESS, META_MASK,
+    MIN_TRADE_USD, REBALANCE_RESERVE_PCT,
+)
 
 
 logger = setup_logging('info')
@@ -39,7 +43,7 @@ def _format_trade_line(trade: dict) -> str:
     if status == "dust":
         return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum"
     if status == "skipped":
-        return f"⏭️ SKIP {symbol} — not tradeable on Binance"
+        return f"⏭️ SKIP {symbol} — no exchange pair available"
     if status == "error":
         return f"❌ {side} {symbol}: trade failed (see logs)"
     if status == "dry_run":
@@ -199,6 +203,29 @@ class Portfolio:
                 fee_rate=trade.get("fee_rate"),
             )
 
+    def _execute_hype(self, amount: float, side: str, prices: dict, dry_run: bool) -> list:
+        """Execute HYPE trade on Hyperliquid. Returns result dicts."""
+        if not HYPERLIQUID_PRIVATE_KEY or not HYPERLIQUID_ACCOUNT_ADDRESS:
+            logger.warning("Hyperliquid credentials not set — skipping HYPE trade")
+            return [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "skipped": True}]
+
+        try:
+            hl = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
+            hl.hyperliquid_user = META_MASK
+        except Exception as err:
+            logger.error("Failed to connect to Hyperliquid: %s", err)
+            return [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "error": str(err)}]
+
+        symbol = "HYPE/USDC"
+        try:
+            trade_amount = apply_precision(hl, symbol, abs(amount))
+            hype_price = prices.get("HYPE")
+            result = place_order(hl, symbol, side, trade_amount, dry_run, price=hype_price)
+            return [result]
+        except Exception as err:
+            logger.error("Hyperliquid HYPE trade error: %s", err)
+            return [{"symbol": symbol, "side": side, "amount": abs(amount), "error": str(err)}]
+
     def execute_rebalance(self, dry_run: bool = True) -> str:
         if not BINANCE_API_KEY or not BINANCE_API_SECRET:
             return "⚠️ Binance API credentials not set — cannot execute trades."
@@ -211,15 +238,24 @@ class Portfolio:
         if not sells and not buys:
             return "✅ Portfolio is balanced — no trades needed."
 
-        try:
-            exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
-        except Exception as err:
-            logger.error("Failed to connect to Binance: %s", err)
-            return "⚠️ Failed to connect to Binance. Check logs for details."
+        results = list(dust)
 
-        results = dust
-        results.extend(self._execute_side(exchange, sells, "sell", prices, dry_run))
-        results.extend(self._execute_side(exchange, buys, "buy", prices, dry_run))
+        # Execute HYPE on Hyperliquid first
+        if "HYPE" in sells:
+            results.extend(self._execute_hype(sells.pop("HYPE"), "sell", prices, dry_run))
+        if "HYPE" in buys:
+            results.extend(self._execute_hype(buys.pop("HYPE"), "buy", prices, dry_run))
+
+        # Execute remaining trades on Binance
+        if sells or buys:
+            try:
+                exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
+            except Exception as err:
+                logger.error("Failed to connect to Binance: %s", err)
+                return "⚠️ Failed to connect to Binance. Check logs for details."
+
+            results.extend(self._execute_side(exchange, sells, "sell", prices, dry_run))
+            results.extend(self._execute_side(exchange, buys, "buy", prices, dry_run))
 
         if not dry_run:
             self._persist_trades(results, prices)
