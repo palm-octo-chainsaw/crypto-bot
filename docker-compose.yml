@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: crypto-bot
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

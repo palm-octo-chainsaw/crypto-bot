@@ -1,0 +1,6 @@
+.env
+.git
+graphify-out/
+data/portfolio.db
+*.log
+__pycache__
