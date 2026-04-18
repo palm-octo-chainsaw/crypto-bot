@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timedelta
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
 import pyotp
 
@@ -158,13 +159,47 @@ async def _handle_device_limit(page) -> None:
     logger.info("[TRW] Device limit resolved")
 
 
+def _normalize_timestamp(raw: str) -> str:
+    """Convert TRW's relative timestamps into stable absolute strings.
+
+    Examples:
+        "Today at 3:09 AM"     -> "2026-04-18 03:09"
+        "Yesterday at 11:30 PM" -> "2026-04-17 23:30"
+        "04/07/2026"            -> "2026-04-07"
+    """
+    now = datetime.now()
+    lower = raw.lower().strip()
+
+    # "Today at 3:09 AM" / "Yesterday at 11:30 PM"
+    m = re.match(r"(today|yesterday)\s+at\s+(.+)", lower)
+    if m:
+        day_label, time_str = m.group(1), m.group(2).strip()
+        base = now if day_label == "today" else now - timedelta(days=1)
+        for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M"):
+            try:
+                t = datetime.strptime(time_str, fmt)
+                return base.strftime("%Y-%m-%d") + t.strftime(" %H:%M")
+            except ValueError:
+                continue
+        return base.strftime("%Y-%m-%d") + f" {time_str}"
+
+    # "04/07/2026" (MM/DD/YYYY)
+    try:
+        dt = datetime.strptime(raw.strip(), "%m/%d/%Y")
+        return dt.strftime("%Y-%m-%d")
+    except ValueError:
+        pass
+
+    return raw
+
+
 async def _extract_timestamp(element) -> str | None:
     """Extract the posted-at timestamp from a TRW chat message element."""
     loc = element.locator("span.opacity-50")
     if await loc.count() > 0:
         text = (await loc.first.inner_text()).strip()
         if text:
-            return text
+            return _normalize_timestamp(text)
     return None
 
 
@@ -265,6 +300,26 @@ async def _open_channel(p, *, save_session: bool = True):
     return browser, context, page
 
 
+MAX_SCROLL_ATTEMPTS = 5
+
+
+async def _scroll_to_bottom(page) -> None:
+    """Scroll the chat container to the bottom to load the latest messages."""
+    await page.evaluate("""
+        (() => {
+            const candidates = document.querySelectorAll(
+                '[class*="message"], [class*="chat"], [class*="post"]'
+            );
+            if (candidates.length > 0) {
+                candidates[candidates.length - 1].scrollIntoView({behavior: 'instant'});
+            } else {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
+        })()
+    """)
+    await page.wait_for_timeout(3000)
+
+
 async def fetch_signal() -> tuple[dict[str, float], str | None]:
     if not all([TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET]):
         raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
@@ -275,7 +330,14 @@ async def fetch_signal() -> tuple[dict[str, float], str | None]:
         try:
             browser, context, page = await _open_channel(p)
             await page.wait_for_timeout(5000)
-            return await _extract_signal(page)
+
+            # Always scroll to bottom first — TRW often loads the page
+            # at an old scroll position showing stale messages.
+            for _ in range(MAX_SCROLL_ATTEMPTS):
+                await _scroll_to_bottom(page)
+
+            allocations, signal_time = await _extract_signal(page)
+            return allocations, signal_time
         except PwTimeout as err:
             if page:
                 try:

@@ -8,7 +8,7 @@ from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal
-from data.database import record_signal, get_latest_allocations
+from data.database import record_signal, get_latest_message_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -127,12 +127,6 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(update, portfolio.execute_rebalance(dry_run=not live))
 
 
-def _allocations_match(a: dict, b: dict) -> bool:
-    if a.keys() != b.keys():
-        return False
-    return all(abs(a[k] - b[k]) < 0.01 for k in a)
-
-
 def _apply_allocations(allocations: dict) -> None:
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
@@ -166,12 +160,12 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⚠️ No allocations found in signal.")
         return
 
-    previous = get_latest_allocations()
-    if previous and _allocations_match(previous, allocations):
-        await _reply(update, "ℹ️ Signal unchanged — no update.", formatted=False)
+    last_ts = get_latest_message_timestamp()
+    if signal_time and last_ts and signal_time == last_ts:
+        await _reply(update, f"ℹ️ Signal unchanged — same timestamp ({signal_time}).", formatted=False)
         return
 
-    record_signal(allocations)
+    record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     await _reply(update, _format_signal_message(allocations, signal_time))
 
@@ -225,14 +219,14 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "no allocations parsed"
         return
 
-    previous = get_latest_allocations()
-    if previous and _allocations_match(previous, allocations):
-        logger.info("poll_signal: no change in allocations")
-        _last_poll_status = "no change"
+    last_ts = get_latest_message_timestamp()
+    if signal_time and last_ts and signal_time == last_ts:
+        logger.info("poll_signal: signal timestamp unchanged (%s)", signal_time)
+        _last_poll_status = f"unchanged (timestamp {signal_time})"
         return
 
-    logger.info("poll_signal: new signal detected, applying and rebalancing")
-    record_signal(allocations)
+    logger.info("poll_signal: new signal detected (timestamp %s), applying and rebalancing", signal_time)
+    record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     _last_poll_status = "new signal detected"
 
