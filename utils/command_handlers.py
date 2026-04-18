@@ -47,6 +47,15 @@ async def post_init(application: Application) -> None:
         )
 
 
+async def post_stop(application: Application) -> None:
+    if CHAT_ID:
+        await application.bot.send_message(
+            chat_id=CHAT_ID,
+            text="🔴 *Bot stopped*",
+            parse_mode="Markdown",
+        )
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
     message = (

@@ -4,7 +4,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler
 
 from constants import BOT_TOKEN
 from utils.command_handlers import (
-    post_init, check, set_target,
+    post_init, post_stop, check, set_target,
     get_targets, get_total, get_spot_balance,
     get_leverage_balance, rebalance, fetch_signal, poll_signal, status,
 )
@@ -20,7 +20,7 @@ if __name__ == "__main__":
     from data.database import init_db
     init_db()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
 
     app.add_handler(CommandHandler("check", check))
     app.add_handler(CommandHandler("balance", get_spot_balance))
