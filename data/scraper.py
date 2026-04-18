@@ -300,24 +300,15 @@ async def _open_channel(p, *, save_session: bool = True):
     return browser, context, page
 
 
-MAX_SCROLL_ATTEMPTS = 5
-
-
-async def _scroll_to_bottom(page) -> None:
-    """Scroll the chat container to the bottom to load the latest messages."""
-    await page.evaluate("""
-        (() => {
-            const candidates = document.querySelectorAll(
-                '[class*="message"], [class*="chat"], [class*="post"]'
-            );
-            if (candidates.length > 0) {
-                candidates[candidates.length - 1].scrollIntoView({behavior: 'instant'});
-            } else {
-                window.scrollTo(0, document.body.scrollHeight);
-            }
-        })()
-    """)
-    await page.wait_for_timeout(3000)
+async def _jump_to_latest(page) -> None:
+    """Click 'Viewing older messages' banner if present to jump to the latest messages."""
+    btn = page.get_by_text("Viewing older messages", exact=False)
+    if await btn.count() > 0:
+        logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
+        await btn.first.click()
+        await page.wait_for_timeout(5000)
+    else:
+        logger.info("[TRW] Already viewing latest messages")
 
 
 async def fetch_signal() -> tuple[dict[str, float], str | None]:
@@ -331,10 +322,7 @@ async def fetch_signal() -> tuple[dict[str, float], str | None]:
             browser, context, page = await _open_channel(p)
             await page.wait_for_timeout(5000)
 
-            # Always scroll to bottom first — TRW often loads the page
-            # at an old scroll position showing stale messages.
-            for _ in range(MAX_SCROLL_ATTEMPTS):
-                await _scroll_to_bottom(page)
+            await _jump_to_latest(page)
 
             allocations, signal_time = await _extract_signal(page)
             return allocations, signal_time
