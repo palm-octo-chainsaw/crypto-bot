@@ -1,12 +1,14 @@
 # crypto-telegram-bot
 
-A Telegram bot for tracking a multi-source crypto portfolio, executing rebalancing trades on Binance, and automatically fetching signal allocations.
+A Telegram bot for tracking a multi-source crypto portfolio, executing rebalancing trades on Binance and Hyperliquid, and automatically fetching signal allocations.
 
 ## Features
 
 - **Multi-source balance aggregation** — combines on-chain wallets, Binance, Kraken, and Hyperliquid into a single portfolio view
-- **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance
-- **Signal scraping** — fetches RSPS signal allocations via headless browser with TOTP authentication
+- **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance and Hyperliquid
+- **Signal scraping** — fetches RSPS signal allocations via headless browser with TOTP authentication, with timestamp-based deduplication
+- **Stale signal detection** — normalizes relative timestamps and auto-clicks "Viewing older messages" to ensure the latest signal is fetched
+- **Shutdown notifications** — sends a Telegram message when the bot stops
 - **Dry-run mode** — preview trades before executing anything real
 - **Dust filtering** — skips trades below a configurable USD minimum to avoid exchange errors
 - **Leverage token tracking** — monitors ERC-20 leverage tokens on Arbitrum
@@ -26,7 +28,7 @@ A Telegram bot for tracking a multi-source crypto portfolio, executing rebalanci
 | BNB | Binance |
 | USDC | Arbitrum (ERC-20) + Binance + Kraken |
 | PAXG | Kraken |
-| HYPE | Hyperliquid spot |
+| HYPE | Hyperliquid spot (balance + trading) |
 
 **Leverage tokens** (Arbitrum): `BTCBULL2X`, `BTCBULL4X`, `ETHBULL4X`
 
@@ -54,6 +56,10 @@ META_MASK=your_evm_wallet_address
 # Binance (balance tracking + trade execution)
 BINANCE_API_KEY=your_binance_api_key
 BINANCE_API_SECRET=your_binance_api_secret
+
+# Hyperliquid (HYPE spot trading)
+HYPERLIQUID_PRIVATE_KEY=your_wallet_private_key
+HYPERLIQUID_ACCOUNT_ADDRESS=your_hyperliquid_account_address
 
 # Kraken (balance tracking only)
 KRAKEN_API_KEY=your_kraken_api_key
@@ -108,6 +114,7 @@ docker run --env-file .env crypto-telegram-bot
 | `/rebalance` | Preview rebalancing trades (dry run) |
 | `/rebalance live` | Execute real market orders on Binance |
 | `/fetch_signal` | Fetch latest RSPS signal and update targets |
+| `/status` | Show scheduled poller status |
 
 ## Architecture
 
@@ -116,7 +123,8 @@ run.py                          # Entry point, registers Telegram handlers
 ├── portfolio.py                # Portfolio state, rebalance logic, trade execution
 ├── data/
 │   ├── balance.py              # Multi-source balance aggregation
-│   ├── trading.py              # ccxt trade routing and order execution
+│   ├── trading.py              # ccxt trade routing (Binance + Hyperliquid)
+│   ├── database.py             # SQLite signal/trade/snapshot storage
 │   ├── prices.py               # CoinGecko price fetching
 │   └── scraper.py              # Signal scraper (Playwright + TOTP)
 ├── utils/
@@ -132,6 +140,15 @@ run.py                          # Entry point, registers Telegram handlers
 
 The bot computes the delta between each asset's current allocation and its target. Assets more than 3% off trigger a rebalance warning on `/check`.
 
-`/rebalance` shows the exact trades needed. `/rebalance live` executes them as market orders on Binance, selling over-allocated assets first (to free USDC), then buying under-allocated ones. Trade routing prefers direct pairs and falls back to routing through USDC.
+`/rebalance` shows the exact trades needed. `/rebalance live` executes them as market orders:
 
-Trades below the `MIN_TRADE_USD` threshold (default $1) are skipped as dust. Assets without a Binance trading pair are flagged and skipped. On-chain and Kraken/Hyperliquid balances are included in the portfolio calculation but must be rebalanced manually.
+1. **HYPE** is traded first on Hyperliquid (HYPE/USDC)
+2. **All other assets** are traded on Binance using available Binance USDC
+
+Sells execute before buys to free up USDC. Trade routing prefers direct pairs and falls back to routing through USDC.
+
+Trades below the `MIN_TRADE_USD` threshold (default $1) are skipped as dust. Assets without an exchange pair are flagged and skipped.
+
+## Signal Polling
+
+The bot polls TRW for new RSPS signals every 10 minutes. Each signal's message timestamp is normalized (relative dates like "Today at 3:09 AM" become absolute `2026-04-18 03:09`) and stored in the database. Signals are deduplicated by timestamp to avoid reprocessing stale data. If TRW loads the page at an old scroll position, the scraper clicks the "Viewing older messages" banner to jump to the latest.
