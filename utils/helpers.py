@@ -22,7 +22,7 @@ def setup_logging(level: str) -> Logger:
         encoding="utf-8",
         handlers=[
             logging.FileHandler(
-                f"{datetime.now().strftime('%Y_%m_%d')}.log"
+                f"logs/{datetime.now().strftime('%Y_%m_%d')}.log"
             ),
             logging.StreamHandler()
         ]
