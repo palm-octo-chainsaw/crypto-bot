@@ -92,18 +92,19 @@ class Balance:
 
     def get_spot_balance(self) -> dict:
         kraken_raw = self.get_raw_kraken_balance()
+        hl = self.get_hyperliquid_balances()
 
         return {
             "BTC":  self.get_binance_balance("BTC") + self._kraken_balance("BTC", kraken_raw),
             "PAXG": self._kraken_balance("PAXG", kraken_raw),
             "SOL":  self.get_binance_balance("SOL") + self._kraken_balance("SOL", kraken_raw),
             "SUI":  self.get_binance_balance("SUI"),
-            "USDC": self.get_usdc_balance() + self._kraken_balance("USDC", kraken_raw),
+            "USDC": self.get_usdc_balance() + self._kraken_balance("USDC", kraken_raw) + hl.get("USDC", 0.0),
             "ETH":  self.get_eth_balance() + self._kraken_balance("ETH", kraken_raw),
             "DOGE": self.get_binance_balance("DOGE") + self._kraken_balance("DOGE", kraken_raw),
             "XRP":  self.get_binance_balance("XRP") + self._kraken_balance("XRP", kraken_raw),
             "LINK": self.get_binance_balance("LINK") + self._kraken_balance("LINK", kraken_raw),
-            "HYPE": self.get_hype_balance(),
+            "HYPE": hl.get("HYPE", 0.0),
             "BNB":  self.get_binance_balance("BNB"),
         }
 
@@ -169,22 +170,22 @@ class Balance:
         self._load_binance_balances()
         return self._binance_balances.get(symbol.upper(), 0.0)
 
-    def get_hype_balance(self) -> float:
+    def get_hyperliquid_balances(self) -> dict:
         if not META_MASK:
-            logger.warning("META_MASK not set; HYPE balance will be 0.")
-            return 0.0
+            logger.warning("META_MASK not set; Hyperliquid balances will be 0.")
+            return {}
         try:
             url = "https://api.hyperliquid.xyz/info"
             payload = {"type": "spotClearinghouseState", "user": META_MASK}
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
-            balances = response.json().get("balances", [])
-            for entry in balances:
-                if entry.get("coin") == "HYPE":
-                    return float(entry.get("total", 0.0))
+            return {
+                entry["coin"]: float(entry.get("total", 0.0))
+                for entry in response.json().get("balances", [])
+            }
         except Exception:
-            logger.error("Error fetching HYPE balance from Hyperliquid", exc_info=True)
-        return 0.0
+            logger.error("Error fetching balances from Hyperliquid", exc_info=True)
+        return {}
 
     def get_raw_kraken_balance(self) -> dict:
         if not self.kraken_client:
