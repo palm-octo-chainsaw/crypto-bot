@@ -37,7 +37,7 @@ def _trade_status(trade: dict) -> str:
 def _format_trade_line(trade: dict) -> str:
     status = _trade_status(trade)
     symbol = trade["symbol"]
-    side = trade.get("side", "").upper()
+    side = (trade.get("side") or "").upper()
     amount = trade.get("amount")
 
     if status == "dust":
