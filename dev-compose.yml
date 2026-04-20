@@ -1,6 +1,6 @@
 services:
   bot:
-    image: a77878123/crypto-bot:latest
+    build: .
     container_name: crypto-bot
     env_file: .env
     volumes:
