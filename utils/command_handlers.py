@@ -101,6 +101,7 @@ async def set_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
+        portfolio.update_portfolio()
         _, _, total = portfolio.fetch_live_data()
         await _reply(update, f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD")
     except Exception as error:
