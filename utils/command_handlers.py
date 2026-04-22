@@ -181,7 +181,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 SCRAPE_FAILURE_ALERT_THRESHOLD = 3
-RATE_LIMIT_COOLDOWN = timedelta(minutes=60)
+RATE_LIMIT_COOLDOWN = timedelta(minutes=40)
 _scrape_failure_count = 0
 _rate_limit_until: datetime | None = None
 
