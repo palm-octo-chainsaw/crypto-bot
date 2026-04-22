@@ -101,10 +101,11 @@ async def _login(page) -> None:
     await submit_btn.first.click()
     await page.wait_for_timeout(5000)
 
-    rate_limit_banner = page.get_by_text("Too many requests", exact=False)
+    rate_limit_banner = page.locator("text=/Too many (requests|failed login)/i")
     if await rate_limit_banner.count() > 0 and await rate_limit_banner.first.is_visible():
+        banner_text = (await rate_limit_banner.first.inner_text()).strip()
         await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
-        raise TRWRateLimitError("TRW login rate-limited ('Too many requests')")
+        raise TRWRateLimitError(f"TRW login rate-limited: {banner_text}")
 
     logger.info("[TRW] Entering TOTP code...")
     totp = pyotp.TOTP(TRW_TOTP_SECRET)
