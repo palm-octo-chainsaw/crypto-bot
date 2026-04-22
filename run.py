@@ -8,7 +8,7 @@ from utils.command_handlers import (
 )
 
 
-SIGNAL_POLL_INTERVAL_SECONDS = 600  # 10 minutes
+SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 
 
 if __name__ == "__main__":

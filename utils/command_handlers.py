@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from telegram import Update, BotCommand
 from telegram.ext import ContextTypes, ExtBot, Application
@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes, ExtBot, Application
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
-from data.scraper import fetch_signal as scrape_signal
+from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError
 from data.database import record_signal, get_latest_message_timestamp
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def post_init(application: Application) -> None:
     if CHAT_ID:
         await application.bot.send_message(
             chat_id=CHAT_ID,
-            text="🟢 *Bot online* — polling TRW every 10 min",
+            text="🟢 *Bot online* — polling TRW every 15 min",
             parse_mode="Markdown",
         )
 
@@ -181,12 +181,14 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 SCRAPE_FAILURE_ALERT_THRESHOLD = 3
+RATE_LIMIT_COOLDOWN = timedelta(minutes=60)
 _scrape_failure_count = 0
+_rate_limit_until: datetime | None = None
 
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
-    global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count
+    global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until
 
     _last_poll_time = datetime.now(timezone.utc)
 
@@ -195,8 +197,28 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "skipped (no CHAT_ID)"
         return
 
+    if _rate_limit_until and _last_poll_time < _rate_limit_until:
+        remaining = int((_rate_limit_until - _last_poll_time).total_seconds() // 60)
+        logger.info("poll_signal: in rate-limit cooldown (%d min remaining), skipping", remaining)
+        _last_poll_status = f"rate-limit cooldown ({remaining} min remaining)"
+        return
+
     try:
         allocations, signal_time = await scrape_signal()
+    except TRWRateLimitError as error:
+        _rate_limit_until = _last_poll_time + RATE_LIMIT_COOLDOWN
+        _poll_failure_count += 1
+        _last_poll_status = f"rate-limited; cooldown until {_rate_limit_until:%H:%M UTC}"
+        logger.warning("poll_signal: %s — cooling down until %s", error, _rate_limit_until)
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                f"⏳ *TRW rate-limited* — pausing scrape for "
+                f"{int(RATE_LIMIT_COOLDOWN.total_seconds() // 60)} min."
+            ),
+            parse_mode="Markdown",
+        )
+        return
     except Exception as error:
         _scrape_failure_count += 1
         _poll_failure_count += 1
