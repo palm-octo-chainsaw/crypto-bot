@@ -109,7 +109,7 @@ async def _login(page) -> None:
     if await rate_limit_banner.count() > 0 and await rate_limit_banner.first.is_visible():
         banner_text = (await rate_limit_banner.first.inner_text()).strip()
         await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
-        retry_match = re.search(r"(\d+)\s*minute", banner_text, re.IGNORECASE)
+        retry_match = re.search(r"(\d{1,4}) minute", banner_text, re.IGNORECASE)
         retry_after = int(retry_match.group(1)) if retry_match else None
         raise TRWRateLimitError(
             f"TRW login rate-limited: {banner_text}",

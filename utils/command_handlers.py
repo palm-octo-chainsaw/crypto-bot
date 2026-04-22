@@ -218,10 +218,13 @@ def _cooldown_remaining(now: datetime) -> timedelta | None:
 
 
 def _set_rate_limit_cooldown(now: datetime, error: TRWRateLimitError) -> timedelta:
-    """Set _rate_limit_until to honor TRW's retry-after hint (min 40 min). Returns duration."""
+    """Set _rate_limit_until to retry-after + 1 min (or default 40 min if no hint). Returns duration."""
     global _rate_limit_until
     default_minutes = int(RATE_LIMIT_COOLDOWN.total_seconds() // 60)
-    minutes = max(error.retry_after_minutes or 0, default_minutes)
+    if error.retry_after_minutes is not None:
+        minutes = error.retry_after_minutes + 1
+    else:
+        minutes = default_minutes
     duration = timedelta(minutes=minutes)
     _rate_limit_until = now + duration
     return duration
