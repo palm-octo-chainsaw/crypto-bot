@@ -25,6 +25,10 @@ KNOWN_TOKENS = {
 class TRWRateLimitError(RuntimeError):
     """TRW login returned a rate-limit response (e.g. 'Too many requests')."""
 
+    def __init__(self, message: str, retry_after_minutes: int | None = None):
+        super().__init__(message)
+        self.retry_after_minutes = retry_after_minutes
+
 
 SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
@@ -105,7 +109,12 @@ async def _login(page) -> None:
     if await rate_limit_banner.count() > 0 and await rate_limit_banner.first.is_visible():
         banner_text = (await rate_limit_banner.first.inner_text()).strip()
         await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
-        raise TRWRateLimitError(f"TRW login rate-limited: {banner_text}")
+        retry_match = re.search(r"(\d+)\s*minute", banner_text, re.IGNORECASE)
+        retry_after = int(retry_match.group(1)) if retry_match else None
+        raise TRWRateLimitError(
+            f"TRW login rate-limited: {banner_text}",
+            retry_after_minutes=retry_after,
+        )
 
     logger.info("[TRW] Entering TOTP code...")
     totp = pyotp.TOTP(TRW_TOTP_SECRET)

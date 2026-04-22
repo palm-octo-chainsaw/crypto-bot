@@ -57,16 +57,25 @@ async def post_stop(application: Application) -> None:
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    now = datetime.now(timezone.utc)
     last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
-    message = (
-        f"📡 *Poller Status*\n\n"
-        f"Schedule: every 10 min\n"
-        f"Last poll: {last}\n"
-        f"Last result: {_last_poll_status}\n"
-        f"Successes: {_poll_success_count}\n"
-        f"Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})"
-    )
-    await _reply(update, message)
+    lines = [
+        "📡 *Poller Status*",
+        "",
+        "Schedule: every 15 min",
+        f"Last poll: {last}",
+        f"Last result: {_last_poll_status}",
+    ]
+    remaining = _cooldown_remaining(now)
+    if remaining is not None and _rate_limit_until is not None:
+        mins = int(remaining.total_seconds() // 60)
+        lines.append(
+            f"Next poll: {_rate_limit_until:%Y-%m-%d %H:%M UTC} "
+            f"(rate-limit cooldown, {mins} min remaining)"
+        )
+    lines.append(f"Successes: {_poll_success_count}")
+    lines.append(f"Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})")
+    await _reply(update, "\n".join(lines))
 
 
 async def _reply(update: Update, message: str, *, formatted: bool = True) -> None:
@@ -157,10 +166,26 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
 
 
 async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    now = datetime.now(timezone.utc)
+    remaining = _cooldown_remaining(now)
+    if remaining is not None:
+        mins = int(remaining.total_seconds() // 60)
+        await update.message.reply_text(
+            f"⏳ TRW rate-limit cooldown active — {mins} min remaining. Try again later."
+        )
+        return
+
     await update.message.reply_text("🔍 Fetching latest RSPS signal from TRW...")
 
     try:
         allocations, signal_time = await scrape_signal()
+    except TRWRateLimitError as error:
+        duration = _set_rate_limit_cooldown(now, error)
+        logger.warning("fetch_signal: %s — cooling down for %s min", error, int(duration.total_seconds() // 60))
+        await update.message.reply_text(
+            f"⏳ TRW rate-limited — scrape paused for {int(duration.total_seconds() // 60)} min."
+        )
+        return
     except Exception as error:
         logger.error("Failed to fetch signal: %s", error, exc_info=True)
         await _reply(update, "⚠️ Error fetching signal. Check logs for details.", formatted=False)
@@ -186,6 +211,22 @@ _scrape_failure_count = 0
 _rate_limit_until: datetime | None = None
 
 
+def _cooldown_remaining(now: datetime) -> timedelta | None:
+    if _rate_limit_until and now < _rate_limit_until:
+        return _rate_limit_until - now
+    return None
+
+
+def _set_rate_limit_cooldown(now: datetime, error: TRWRateLimitError) -> timedelta:
+    """Set _rate_limit_until to honor TRW's retry-after hint (min 40 min). Returns duration."""
+    global _rate_limit_until
+    default_minutes = int(RATE_LIMIT_COOLDOWN.total_seconds() // 60)
+    minutes = max(error.retry_after_minutes or 0, default_minutes)
+    duration = timedelta(minutes=minutes)
+    _rate_limit_until = now + duration
+    return duration
+
+
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
     global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until
@@ -197,16 +238,17 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "skipped (no CHAT_ID)"
         return
 
-    if _rate_limit_until and _last_poll_time < _rate_limit_until:
-        remaining = int((_rate_limit_until - _last_poll_time).total_seconds() // 60)
-        logger.info("poll_signal: in rate-limit cooldown (%d min remaining), skipping", remaining)
-        _last_poll_status = f"rate-limit cooldown ({remaining} min remaining)"
+    remaining = _cooldown_remaining(_last_poll_time)
+    if remaining is not None:
+        mins = int(remaining.total_seconds() // 60)
+        logger.info("poll_signal: in rate-limit cooldown (%d min remaining), skipping", mins)
+        _last_poll_status = f"rate-limit cooldown ({mins} min remaining)"
         return
 
     try:
         allocations, signal_time = await scrape_signal()
     except TRWRateLimitError as error:
-        _rate_limit_until = _last_poll_time + RATE_LIMIT_COOLDOWN
+        duration = _set_rate_limit_cooldown(_last_poll_time, error)
         _poll_failure_count += 1
         _last_poll_status = f"rate-limited; cooldown until {_rate_limit_until:%H:%M UTC}"
         logger.warning("poll_signal: %s — cooling down until %s", error, _rate_limit_until)
@@ -214,7 +256,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id=CHAT_ID,
             text=(
                 f"⏳ *TRW rate-limited* — pausing scrape for "
-                f"{int(RATE_LIMIT_COOLDOWN.total_seconds() // 60)} min."
+                f"{int(duration.total_seconds() // 60)} min."
             ),
             parse_mode="Markdown",
         )
