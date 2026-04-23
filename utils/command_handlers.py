@@ -168,6 +168,7 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
 
 
 async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _credentials_invalid
     now = datetime.now(timezone.utc)
     if _credentials_invalid:
         await update.message.reply_text(
@@ -194,7 +195,6 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     except TRWInvalidCredentialsError as error:
-        global _credentials_invalid
         _credentials_invalid = True
         logger.error("fetch_signal: %s", error)
         await update.message.reply_text(
