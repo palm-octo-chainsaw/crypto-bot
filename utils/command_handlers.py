@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes, ExtBot, Application
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
-from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError
+from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
 from data.database import record_signal, get_latest_message_timestamp
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,8 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Last poll: {last}",
         f"Last result: {_last_poll_status}",
     ]
+    if _credentials_invalid:
+        lines.append("⚠️ Paused — TRW credentials invalid (update TRW_PASSWORD and restart)")
     remaining = _cooldown_remaining(now)
     if remaining is not None and _rate_limit_until is not None:
         mins = int(remaining.total_seconds() // 60)
@@ -167,6 +169,11 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
 
 async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     now = datetime.now(timezone.utc)
+    if _credentials_invalid:
+        await update.message.reply_text(
+            "🔐 TRW credentials are invalid — scrape paused. Update TRW_PASSWORD and restart the container."
+        )
+        return
     remaining = _cooldown_remaining(now)
     if remaining is not None:
         mins = int(remaining.total_seconds() // 60)
@@ -184,6 +191,14 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.warning("fetch_signal: %s — cooling down for %s min", error, int(duration.total_seconds() // 60))
         await update.message.reply_text(
             f"⏳ TRW rate-limited — scrape paused for {int(duration.total_seconds() // 60)} min."
+        )
+        return
+    except TRWInvalidCredentialsError as error:
+        global _credentials_invalid
+        _credentials_invalid = True
+        logger.error("fetch_signal: %s", error)
+        await update.message.reply_text(
+            "🔐 TRW rejected credentials. Scrape paused — update TRW_PASSWORD and restart the container."
         )
         return
     except Exception as error:
@@ -209,6 +224,7 @@ SCRAPE_FAILURE_ALERT_THRESHOLD = 3
 RATE_LIMIT_COOLDOWN = timedelta(minutes=40)
 _scrape_failure_count = 0
 _rate_limit_until: datetime | None = None
+_credentials_invalid: bool = False
 
 
 def _cooldown_remaining(now: datetime) -> timedelta | None:
@@ -232,13 +248,18 @@ def _set_rate_limit_cooldown(now: datetime, error: TRWRateLimitError) -> timedel
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
-    global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until
+    global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until, _credentials_invalid
 
     _last_poll_time = datetime.now(timezone.utc)
 
     if not CHAT_ID:
         logger.warning("CHAT_ID not set — poll_signal cannot send notifications")
         _last_poll_status = "skipped (no CHAT_ID)"
+        return
+
+    if _credentials_invalid:
+        logger.info("poll_signal: credentials invalid, skipping")
+        _last_poll_status = "paused (invalid credentials)"
         return
 
     remaining = _cooldown_remaining(_last_poll_time)
@@ -260,6 +281,20 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             text=(
                 f"⏳ *TRW rate-limited* — pausing scrape for "
                 f"{int(duration.total_seconds() // 60)} min."
+            ),
+            parse_mode="Markdown",
+        )
+        return
+    except TRWInvalidCredentialsError as error:
+        _credentials_invalid = True
+        _poll_failure_count += 1
+        _last_poll_status = "paused (invalid credentials)"
+        logger.error("poll_signal: %s — pausing scrape until restart", error)
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=(
+                "🔐 *TRW rejected credentials* — scrape paused.\n"
+                "Update `TRW_PASSWORD` and restart the container."
             ),
             parse_mode="Markdown",
         )
