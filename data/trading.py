@@ -85,6 +85,26 @@ def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool,
     return order
 
 
+def place_market_buy_cost(exchange, symbol: str, cost: float, dry_run: bool) -> dict:
+    """Market-buy by spending an exact quote-currency amount (Binance quoteOrderQty)."""
+    cost_precise = float(exchange.cost_to_precision(symbol, cost))
+    if dry_run:
+        logger.info("[DRY RUN] BUY cost=%s on %s", cost_precise, symbol)
+        return {"symbol": symbol, "side": "buy", "cost": cost_precise, "dry_run": True}
+    logger.info("Executing: BUY cost=%s on %s", cost_precise, symbol)
+    order = exchange.create_market_buy_order_with_cost(symbol, cost_precise)
+    fee = order.get("fee") or {}
+    order["fee_amount"] = fee.get("cost")
+    order["fee_currency"] = fee.get("currency")
+    order["fee_rate"] = fee.get("rate")
+    order["amount"] = order.get("filled") or order.get("amount") or 0
+    order["cost"] = order.get("cost") or cost_precise
+    logger.info("Order filled: id=%s status=%s filled=%s fee=%s %s",
+                order.get("id"), order.get("status"), order["amount"],
+                order["fee_amount"], order["fee_currency"])
+    return order
+
+
 def execute_trade(exchange, sell_token: str, buy_token: str, sell_amount: float,
                   prices: dict, stable: str, dry_run: bool) -> list:
     """Execute sell_token -> buy_token. Prefers direct pairs, falls back via stable."""
