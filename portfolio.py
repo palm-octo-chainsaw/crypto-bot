@@ -1,6 +1,6 @@
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
-from data.trading import create_binance, create_hyperliquid, execute_trade, find_direct_pair, place_order, apply_precision
+from data.trading import create_binance, create_hyperliquid, find_direct_pair, place_order, place_market_buy_cost, apply_precision
 from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
@@ -159,26 +159,74 @@ class Portfolio:
                 buys[symbol] = amount
         return sells, buys, dust
 
-    def _execute_side(self, exchange, tokens: dict, side: str, prices: dict, dry_run: bool) -> list:
-        """Execute all trades on one side (sells or buys). Returns result dicts."""
+    def _execute_sells(self, exchange, sells: dict, dry_run: bool) -> list:
+        """Sell planned_amount/holdings (capped at 1.0) of each token's free exchange balance."""
         results = []
-        for token, amount in tokens.items():
-            pair_display = f"{token}/{STABLE}" if side == "sell" else f"{STABLE}/{token}"
+        if not sells:
+            return results
+        free = exchange.fetch_balance().get("free", {})
 
+        for token, planned_amount in sells.items():
+            pair_display = f"{token}/{STABLE}"
             if not _is_directly_tradeable(exchange, token, STABLE):
                 logger.info("Skipping %s — no Binance pair available", token)
-                results.append({"symbol": pair_display, "side": side, "amount": amount, "skipped": True})
+                results.append({"symbol": pair_display, "side": "sell", "amount": planned_amount, "skipped": True})
+                continue
+
+            holdings = self.portfolio.get(token, 0.0)
+            free_amount = float(free.get(token, 0.0))
+            if holdings <= 0 or free_amount <= 0:
+                logger.warning("No %s balance to sell (holdings=%s, free=%s)", token, holdings, free_amount)
+                results.append({"symbol": pair_display, "side": "sell", "amount": planned_amount,
+                                "error": "zero balance"})
+                continue
+
+            fraction = min(planned_amount / holdings, 1.0)
+            sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+            if sell_amount <= 0:
+                logger.warning("Sell size for %s rounded to 0 (free=%s fraction=%.4f)", token, free_amount, fraction)
+                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
                 continue
 
             try:
-                if side == "sell":
-                    results.extend(execute_trade(exchange, token, STABLE, amount, prices, STABLE, dry_run))
-                else:
-                    stable_needed = amount * prices[token]
-                    results.extend(execute_trade(exchange, STABLE, token, stable_needed, prices, STABLE, dry_run))
+                results.append(place_order(exchange, f"{token}/{STABLE}", "sell", sell_amount, dry_run))
             except Exception as err:
-                logger.error("Trade error on %s %s: %s", side, token, err)
-                results.append({"symbol": pair_display, "side": side, "amount": amount, "error": str(err)})
+                logger.error("Trade error on sell %s: %s", token, err)
+                results.append({"symbol": pair_display, "side": "sell", "amount": sell_amount, "error": str(err)})
+        return results
+
+    def _execute_buys(self, exchange, buys: dict, prices: dict, dry_run: bool) -> list:
+        """Spend per-token fraction of fresh free USDC (quoteOrderQty) weighted by intended USD."""
+        results = []
+        if not buys:
+            return results
+        free = exchange.fetch_balance().get("free", {})
+        free_stable = float(free.get(STABLE, 0.0))
+
+        total_intended_usd = sum(amt * prices[tok] for tok, amt in buys.items())
+        if total_intended_usd <= 0 or free_stable <= 0:
+            for token, amount in buys.items():
+                results.append({"symbol": f"{STABLE}/{token}", "side": "buy", "amount": amount,
+                                "error": f"no {STABLE} to spend"})
+            return results
+
+        for token, planned_amount in buys.items():
+            pair_display = f"{STABLE}/{token}"
+            if not _is_directly_tradeable(exchange, token, STABLE):
+                logger.info("Skipping %s — no Binance pair available", token)
+                results.append({"symbol": pair_display, "side": "buy", "amount": planned_amount, "skipped": True})
+                continue
+
+            intended_usd = planned_amount * prices[token]
+            fraction = intended_usd / total_intended_usd
+            cost = free_stable * fraction
+            symbol = f"{token}/{STABLE}"
+            try:
+                results.append(place_market_buy_cost(exchange, symbol, cost, dry_run))
+            except Exception as err:
+                logger.error("Trade error on buy %s: %s", token, err)
+                results.append({"symbol": pair_display, "side": "buy", "amount": planned_amount,
+                                "cost": cost, "error": str(err)})
         return results
 
     def _persist_trades(self, results: list, prices: dict) -> None:
@@ -220,7 +268,11 @@ class Portfolio:
 
         symbol = self.HYPE_PAIR
         try:
-            trade_amount = apply_precision(hl, symbol, abs(amount))
+            trade_amount = abs(amount)
+            if side == "sell":
+                free_hype = float(hl.fetch_balance().get("free", {}).get("HYPE", 0.0))
+                trade_amount = min(trade_amount, free_hype)
+            trade_amount = apply_precision(hl, symbol, trade_amount)
             hype_price = prices.get("HYPE")
             result = place_order(hl, symbol, side, trade_amount, dry_run, price=hype_price)
             return [result]
@@ -256,8 +308,8 @@ class Portfolio:
                 logger.error("Failed to connect to Binance: %s", err)
                 return "⚠️ Failed to connect to Binance. Check logs for details."
 
-            results.extend(self._execute_side(exchange, sells, "sell", prices, dry_run))
-            results.extend(self._execute_side(exchange, buys, "buy", prices, dry_run))
+            results.extend(self._execute_sells(exchange, sells, dry_run))
+            results.extend(self._execute_buys(exchange, buys, prices, dry_run))
 
         if not dry_run:
             self._persist_trades(results, prices)
