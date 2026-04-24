@@ -30,6 +30,10 @@ class TRWRateLimitError(RuntimeError):
         self.retry_after_minutes = retry_after_minutes
 
 
+class TRWInvalidCredentialsError(RuntimeError):
+    """TRW login rejected the supplied email/password."""
+
+
 SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -115,6 +119,12 @@ async def _login(page) -> None:
             f"TRW login rate-limited: {banner_text}",
             retry_after_minutes=retry_after,
         )
+
+    invalid_creds_banner = page.locator("text=/Invalid credentials/i")
+    if await invalid_creds_banner.count() > 0 and await invalid_creds_banner.first.is_visible():
+        banner_text = (await invalid_creds_banner.first.inner_text()).strip()
+        await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+        raise TRWInvalidCredentialsError(f"TRW login rejected: {banner_text}")
 
     logger.info("[TRW] Entering TOTP code...")
     totp = pyotp.TOTP(TRW_TOTP_SECRET)
