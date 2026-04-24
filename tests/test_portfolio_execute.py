@@ -43,7 +43,7 @@ def test_sell_full_liquidation_uses_free_balance_when_snapshot_overstates():
     ex = FakeExchange(free=free, markets={"ETH/USDC": {}})
 
     portfolio = _portfolio(holdings)
-    results = portfolio._execute_sells(ex, {"ETH": 1.1673}, {"ETH": 3000.0}, dry_run=False)
+    results = portfolio._execute_sells(ex, {"ETH": 1.1673}, dry_run=False)
 
     assert len(ex.orders) == 1
     _, symbol, side, amount = ex.orders[0]
@@ -57,7 +57,7 @@ def test_sell_partial_fraction():
     """Planned 0.5 of holdings 2.0 → sells 50% of free balance."""
     ex = FakeExchange(free={"ETH": 1.8}, markets={"ETH/USDC": {}})
     portfolio = _portfolio({"ETH": 2.0})
-    portfolio._execute_sells(ex, {"ETH": 1.0}, {"ETH": 3000.0}, dry_run=False)
+    portfolio._execute_sells(ex, {"ETH": 1.0}, dry_run=False)
 
     _, _, _, amount = ex.orders[0]
     assert amount == pytest.approx(0.9, rel=1e-4)
@@ -95,7 +95,7 @@ def test_buy_no_stable_balance_errors_out():
 def test_sell_zero_free_balance_skips_order():
     ex = FakeExchange(free={"ETH": 0.0}, markets={"ETH/USDC": {}})
     portfolio = _portfolio({"ETH": 1.0})
-    results = portfolio._execute_sells(ex, {"ETH": 0.5}, {"ETH": 3000.0}, dry_run=False)
+    results = portfolio._execute_sells(ex, {"ETH": 0.5}, dry_run=False)
 
     assert ex.orders == []
     assert results[0]["error"] == "zero balance"

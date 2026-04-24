@@ -159,7 +159,7 @@ class Portfolio:
                 buys[symbol] = amount
         return sells, buys, dust
 
-    def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:
+    def _execute_sells(self, exchange, sells: dict, dry_run: bool) -> list:
         """Sell planned_amount/holdings (capped at 1.0) of each token's free exchange balance."""
         results = []
         if not sells:
@@ -308,7 +308,7 @@ class Portfolio:
                 logger.error("Failed to connect to Binance: %s", err)
                 return "⚠️ Failed to connect to Binance. Check logs for details."
 
-            results.extend(self._execute_sells(exchange, sells, prices, dry_run))
+            results.extend(self._execute_sells(exchange, sells, dry_run))
             results.extend(self._execute_buys(exchange, buys, prices, dry_run))
 
         if not dry_run:
