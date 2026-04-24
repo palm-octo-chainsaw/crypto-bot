@@ -39,6 +39,8 @@ def _format_trade_line(trade: dict) -> str:
     symbol = trade["symbol"]
     side = (trade.get("side") or "").upper()
     amount = trade.get("amount")
+    cost = trade.get("cost")
+    qty = f"${cost:.2f} {STABLE}" if amount in (None, 0) and cost else f"`{amount}`"
 
     if status == "dust":
         return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum"
@@ -47,8 +49,8 @@ def _format_trade_line(trade: dict) -> str:
     if status == "error":
         return f"❌ {side} {symbol}: trade failed (see logs)"
     if status == "dry_run":
-        return f"📋 {side} `{amount}` {symbol}"
-    return f"✅ {side} `{amount}` {symbol} — id: {trade.get('id', '?')}"
+        return f"📋 {side} {qty} {symbol}"
+    return f"✅ {side} {qty} {symbol} — id: {trade.get('id', '?')}"
 
 
 class Portfolio:
