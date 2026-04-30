@@ -43,7 +43,7 @@ def test_sell_full_liquidation_uses_free_balance_when_snapshot_overstates():
     ex = FakeExchange(free=free, markets={"ETH/USDC": {}})
 
     portfolio = _portfolio(holdings)
-    results = portfolio._execute_sells(ex, {"ETH": 1.1673}, dry_run=False)
+    results = portfolio._execute_sells(ex, {"ETH": 1.1673}, {"ETH": 2500.0}, dry_run=False)
 
     assert len(ex.orders) == 1
     _, symbol, side, amount = ex.orders[0]
@@ -57,7 +57,7 @@ def test_sell_partial_fraction():
     """Planned 0.5 of holdings 2.0 → sells 50% of free balance."""
     ex = FakeExchange(free={"ETH": 1.8}, markets={"ETH/USDC": {}})
     portfolio = _portfolio({"ETH": 2.0})
-    portfolio._execute_sells(ex, {"ETH": 1.0}, dry_run=False)
+    portfolio._execute_sells(ex, {"ETH": 1.0}, {"ETH": 2500.0}, dry_run=False)
 
     _, _, _, amount = ex.orders[0]
     assert amount == pytest.approx(0.9, rel=1e-4)
@@ -95,7 +95,7 @@ def test_buy_no_stable_balance_errors_out():
 def test_sell_zero_free_balance_skips_order():
     ex = FakeExchange(free={"ETH": 0.0}, markets={"ETH/USDC": {}})
     portfolio = _portfolio({"ETH": 1.0})
-    results = portfolio._execute_sells(ex, {"ETH": 0.5}, dry_run=False)
+    results = portfolio._execute_sells(ex, {"ETH": 0.5}, {"ETH": 2500.0}, dry_run=False)
 
     assert ex.orders == []
     assert results[0]["error"] == "zero balance"
@@ -165,23 +165,40 @@ def test_cross_pair_skips_when_no_direct_market():
     assert buys == {"BTC": 0.02}
 
 
-def test_sell_below_min_lot_skips_without_aborting_rebalance():
-    """When apply_precision raises (amount below market min lot), skip leg and continue."""
+def test_sell_dust_when_free_balance_below_min_trade_usd():
+    """Free balance worth < MIN_TRADE_USD → marked dust, not attempted as a trade. Other legs execute."""
+    ex = FakeExchange(
+        free={"ETH": 0.00005, "BTC": 0.5},
+        markets={"ETH/USDC": {}, "BTC/USDC": {}},
+    )
+    portfolio = _portfolio({"ETH": 0.00005, "BTC": 0.5})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+    results = portfolio._execute_sells(ex, {"ETH": 0.00005, "BTC": 0.1}, prices, dry_run=False)
+
+    eth_result = next(r for r in results if r.get("symbol") == "ETH/USDC")
+    assert eth_result.get("dust") is True
+    assert eth_result.get("error") is None
+    assert any(o[1] == "BTC/USDC" for o in ex.orders), "BTC sell should still execute"
+
+
+def test_sell_precision_error_caught_when_dust_check_passes():
+    """Defensive path: if apply_precision still raises after the dust check, skip cleanly."""
     from ccxt.base.errors import InvalidOrder
 
     class PrecisionFailExchange(FakeExchange):
         def amount_to_precision(self, symbol, amount):
             if symbol == "ETH/USDC":
-                raise InvalidOrder(f"binance amount of {symbol} must be greater than minimum amount precision of 0.0001")
+                raise InvalidOrder(f"binance amount of {symbol} unexpected error")
             return f"{float(amount):.6f}"
 
     ex = PrecisionFailExchange(
-        free={"ETH": 0.00005, "BTC": 0.5},
+        free={"ETH": 1.0, "BTC": 0.5},
         markets={"ETH/USDC": {}, "BTC/USDC": {}},
     )
-    portfolio = _portfolio({"ETH": 0.00005, "BTC": 0.5})
-    results = portfolio._execute_sells(ex, {"ETH": 0.00005, "BTC": 0.1}, dry_run=False)
+    portfolio = _portfolio({"ETH": 1.0, "BTC": 0.5})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+    results = portfolio._execute_sells(ex, {"ETH": 0.5, "BTC": 0.1}, prices, dry_run=False)
 
     eth_result = next(r for r in results if r.get("symbol") == "ETH/USDC")
     assert eth_result["error"] == "size below precision"
-    assert any(o[1] == "BTC/USDC" for o in ex.orders), "BTC sell should still execute despite ETH precision failure"
+    assert any(o[1] == "BTC/USDC" for o in ex.orders)
