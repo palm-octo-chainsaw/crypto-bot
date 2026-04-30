@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update, BotCommand
@@ -8,7 +9,10 @@ from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
-from data.database import record_signal, get_latest_message_timestamp, get_latest_allocations
+from data.database import (
+    record_signal, get_latest_message_timestamp, get_latest_allocations,
+    get_recent_trades,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,7 @@ _last_poll_time: datetime | None = None
 _last_poll_status: str = "not yet run"
 _poll_success_count: int = 0
 _poll_failure_count: int = 0
+_started_at: datetime = datetime.now(timezone.utc)
 
 
 async def set_bot_commands(bot: ExtBot) -> None:
@@ -34,6 +39,7 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("rebalance", "Dry-run rebalance (/rebalance live to execute real trades)"),
         BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
         BotCommand("status", "Show scheduled poller status"),
+        BotCommand("info", "Show app version, poller, signal, portfolio, connectivity"),
     ])
 
 
@@ -78,6 +84,141 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines.append(f"Successes: {_poll_success_count}")
     lines.append(f"Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})")
     await _reply(update, "\n".join(lines))
+
+
+def _format_uptime(delta: timedelta) -> str:
+    total = int(delta.total_seconds())
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, _ = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _format_version_section(now: datetime) -> list[str]:
+    version = os.environ.get("APP_VERSION") or "unknown"
+    uptime = _format_uptime(now - _started_at)
+    return [
+        "🛠️ *Version & Uptime*",
+        f"Version: `{version}`",
+        f"Uptime: {uptime}",
+        f"Started: {_started_at:%Y-%m-%d %H:%M UTC}",
+    ]
+
+
+def _format_poller_section(now: datetime) -> list[str]:
+    last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
+    lines = [
+        "📡 *Poller*",
+        f"Last poll: {last}",
+        f"Last result: {_last_poll_status}",
+        f"Successes: {_poll_success_count}  Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})",
+    ]
+    if _credentials_invalid:
+        lines.append("⚠️ Paused — TRW credentials invalid")
+    remaining = _cooldown_remaining(now)
+    if remaining is not None and _rate_limit_until is not None:
+        mins = int(remaining.total_seconds() // 60)
+        lines.append(f"Cooldown: {mins} min remaining (until {_rate_limit_until:%H:%M UTC})")
+    return lines
+
+
+def _format_signal_section() -> list[str]:
+    lines = ["📨 *Latest Signal*"]
+    try:
+        allocations = get_latest_allocations()
+        ts = get_latest_message_timestamp()
+        if not allocations:
+            lines.append("none recorded")
+            return lines
+        if ts:
+            lines.append(f"Posted: {ts}")
+        for symbol, pct in allocations.items():
+            lines.append(f"{symbol}: {pct}%")
+    except Exception as err:
+        lines.append(f"⚠️ unavailable ({err})")
+    return lines
+
+
+def _format_portfolio_section() -> list[str]:
+    lines = ["💰 *Portfolio*"]
+    try:
+        portfolio.update_portfolio()
+        _, _, total = portfolio.fetch_live_data()
+        non_zero = {s: v for s, v in portfolio.portfolio.items() if v > 0}
+        for symbol, value in non_zero.items():
+            lines.append(f"{symbol}: {value}")
+        lines.append(f"Total: ${total:,.2f}")
+    except Exception as err:
+        lines.append(f"⚠️ unavailable ({err})")
+    return lines
+
+
+def _ping_binance() -> str:
+    try:
+        client = portfolio.balance.binance_client
+        if client is None:
+            return "Binance: ⚠️ no credentials"
+        client.ping()
+        return "Binance: ✅"
+    except Exception as err:
+        return f"Binance: ❌ ({err})"
+
+
+def _ping_arbitrum() -> str:
+    try:
+        return "Arbitrum: ✅" if portfolio.balance.w3.is_connected() else "Arbitrum: ❌"
+    except Exception as err:
+        return f"Arbitrum: ❌ ({err})"
+
+
+def _format_connectivity_section() -> list[str]:
+    return ["🔌 *Connectivity*", _ping_binance(), _ping_arbitrum()]
+
+
+def _format_trades_section() -> list[str]:
+    lines = ["📜 *Recent Trades*"]
+    try:
+        trades = get_recent_trades(limit=5)
+    except Exception as err:
+        lines.append(f"⚠️ unavailable ({err})")
+        return lines
+    if not trades:
+        lines.append("none recorded")
+        return lines
+    for t in trades:
+        ts = t["timestamp"][:19].replace("T", " ")
+        marker = " (dry)" if t["dry_run"] else ""
+        usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
+        lines.append(f"{ts} {t['side']} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}")
+    return lines
+
+
+def _format_info() -> str:
+    now = datetime.now(timezone.utc)
+    sections = [
+        _format_version_section(now),
+        _format_poller_section(now),
+        _format_signal_section(),
+        _format_portfolio_section(),
+        _format_connectivity_section(),
+        _format_trades_section(),
+    ]
+    blocks = ["\n".join(section) for section in sections]
+    return "\n\n".join(blocks)
+
+
+async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        message = _format_info()
+    except Exception as error:
+        logger.error("Command failed: %s", error, exc_info=True)
+        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        return
+    await _reply(update, message)
 
 
 async def _reply(update: Update, message: str, *, formatted: bool = True) -> None:
