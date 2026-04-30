@@ -161,6 +161,72 @@ class Portfolio:
                 buys[symbol] = amount
         return sells, buys, dust
 
+    def _execute_cross_pairs(self, exchange, sells: dict, buys: dict, prices: dict, dry_run: bool) -> list:
+        """Match sell/buy legs via direct cross-pairs (e.g. ETH/BTC) before routing through STABLE.
+        Mutates `sells` and `buys` to reduce or remove fully-matched legs."""
+        results = []
+        if not sells or not buys:
+            return results
+        free = dict(exchange.fetch_balance().get("free", {}))
+
+        for sell_token in list(sells.keys()):
+            for buy_token in list(buys.keys()):
+                if sell_token == buy_token:
+                    continue
+                direct = find_direct_pair(exchange, sell_token, buy_token)
+                if not direct:
+                    continue
+
+                matched_usd = min(
+                    sells[sell_token] * prices[sell_token],
+                    buys[buy_token] * prices[buy_token],
+                )
+                if matched_usd < MIN_TRADE_USD:
+                    continue
+
+                holdings = self.portfolio.get(sell_token, 0.0)
+                free_amount = float(free.get(sell_token, 0.0))
+                if holdings <= 0 or free_amount <= 0:
+                    continue
+                planned_sell = matched_usd / prices[sell_token]
+                fraction = min(planned_sell / holdings, 1.0)
+                actual_sell = free_amount * fraction
+                if actual_sell <= 0:
+                    continue
+
+                symbol, side = direct
+                pair_display = f"{sell_token}->{buy_token} via {symbol}"
+                try:
+                    if side == "sell":
+                        amount = apply_precision(exchange, symbol, actual_sell)
+                    else:
+                        buy_amount_in_buy_token = actual_sell * prices[sell_token] / prices[buy_token]
+                        amount = apply_precision(exchange, symbol, buy_amount_in_buy_token)
+                except Exception as err:
+                    logger.warning("Cross precision error %s: %s", pair_display, err)
+                    continue
+                if amount <= 0:
+                    continue
+
+                try:
+                    order = place_order(exchange, symbol, side, amount, dry_run)
+                except Exception as err:
+                    logger.error("Cross trade error %s: %s", pair_display, err)
+                    results.append({"symbol": symbol, "side": side, "amount": amount, "error": str(err)})
+                    continue
+
+                results.append(order)
+                executed_usd = actual_sell * prices[sell_token]
+                sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
+                buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
+                free[sell_token] = free_amount - actual_sell
+                if buys[buy_token] * prices[buy_token] < MIN_TRADE_USD:
+                    buys.pop(buy_token, None)
+                if sells[sell_token] * prices[sell_token] < MIN_TRADE_USD:
+                    sells.pop(sell_token, None)
+                    break  # this sell_token is done; move to the next
+        return results
+
     def _execute_sells(self, exchange, sells: dict, dry_run: bool) -> list:
         """Sell planned_amount/holdings (capped at 1.0) of each token's free exchange balance."""
         results = []
@@ -184,7 +250,12 @@ class Portfolio:
                 continue
 
             fraction = min(planned_amount / holdings, 1.0)
-            sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+            try:
+                sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+            except Exception as err:
+                logger.warning("Sell precision error for %s (free=%s fraction=%.4f): %s", token, free_amount, fraction, err)
+                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
+                continue
             if sell_amount <= 0:
                 logger.warning("Sell size for %s rounded to 0 (free=%s fraction=%.4f)", token, free_amount, fraction)
                 results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
@@ -310,6 +381,7 @@ class Portfolio:
                 logger.error("Failed to connect to Binance: %s", err)
                 return "⚠️ Failed to connect to Binance. Check logs for details."
 
+            results.extend(self._execute_cross_pairs(exchange, sells, buys, prices, dry_run))
             results.extend(self._execute_sells(exchange, sells, dry_run))
             results.extend(self._execute_buys(exchange, buys, prices, dry_run))
 
