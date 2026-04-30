@@ -4,31 +4,6 @@ import pytest
 from utils import command_handlers as ch
 
 
-class FakeBot:
-    def __init__(self):
-        self.sent = []
-
-    async def send_message(self, chat_id, text, parse_mode=None):
-        self.sent.append(text)
-
-
-class FakeContext:
-    def __init__(self):
-        self.bot = FakeBot()
-
-
-@pytest.fixture(autouse=True)
-def reset_state(monkeypatch):
-    monkeypatch.setattr(ch, "_credentials_invalid", False)
-    monkeypatch.setattr(ch, "_rate_limit_until", None)
-    monkeypatch.setattr(ch, "_scrape_failure_count", 0)
-    monkeypatch.setattr(ch, "_poll_failure_count", 0)
-    monkeypatch.setattr(ch, "_poll_success_count", 0)
-    monkeypatch.setattr(ch, "_last_poll_time", None)
-    monkeypatch.setattr(ch, "_last_poll_status", "")
-    monkeypatch.setattr(ch, "CHAT_ID", "123")
-
-
 def test_allocations_match_identical():
     assert ch._allocations_match({"BTC": 50.0, "ETH": 50.0}, {"BTC": 50.0, "ETH": 50.0})
 
@@ -45,7 +20,6 @@ def test_allocations_differ_when_value_changes():
 
 
 def test_allocations_match_treats_missing_key_as_zero():
-    # Adding/removing an explicit zero key is semantically the same allocation.
     assert ch._allocations_match({"BTC": 100.0}, {"BTC": 100.0, "ETH": 0.0})
 
 
@@ -60,7 +34,7 @@ def test_allocations_match_none_handling():
 
 
 @pytest.mark.asyncio
-async def test_poll_signal_reapplies_on_edited_signal(monkeypatch):
+async def test_poll_signal_reapplies_on_edited_signal(monkeypatch, fake_context):
     """Same timestamp + changed allocations → treat as new signal."""
     new_allocs = {"BTC": 66.6, "ETH": 33.3, "USDC": 0.0}
     old_allocs = {"BTC": 50.0, "ETH": 33.3, "USDC": 16.7}
@@ -73,25 +47,15 @@ async def test_poll_signal_reapplies_on_edited_signal(monkeypatch):
     monkeypatch.setattr(ch, "get_latest_allocations", lambda: old_allocs)
 
     recorded = {}
-    def fake_record(allocs, message_timestamp=None):
-        recorded["allocs"] = allocs
-        recorded["ts"] = message_timestamp
-        return 1
-    monkeypatch.setattr(ch, "record_signal", fake_record)
+    monkeypatch.setattr(ch, "record_signal", lambda allocs, message_timestamp=None: recorded.update(allocs=allocs, ts=message_timestamp) or 1)
 
     applied = {}
-    def fake_apply(allocs):
-        applied["allocs"] = allocs
-    monkeypatch.setattr(ch, "_apply_allocations", fake_apply)
+    monkeypatch.setattr(ch, "_apply_allocations", lambda allocs: applied.update(allocs=allocs))
 
     rebalanced = {"called": False}
-    def fake_rebalance(dry_run=False):
-        rebalanced["called"] = True
-        return "ok"
-    monkeypatch.setattr(ch.portfolio, "execute_rebalance", fake_rebalance)
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", lambda dry_run=False: rebalanced.update(called=True) or "ok")
 
-    ctx = FakeContext()
-    await ch.poll_signal(ctx)
+    await ch.poll_signal(fake_context)
 
     assert recorded.get("allocs") == new_allocs
     assert applied.get("allocs") == new_allocs
@@ -99,7 +63,7 @@ async def test_poll_signal_reapplies_on_edited_signal(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_poll_signal_skips_when_unchanged(monkeypatch):
+async def test_poll_signal_skips_when_unchanged(monkeypatch, fake_context):
     """Same timestamp + same allocations → no re-apply."""
     allocs = {"BTC": 50.0, "ETH": 33.3, "USDC": 16.7}
     timestamp = "2026-04-30 00:10"
@@ -116,7 +80,6 @@ async def test_poll_signal_skips_when_unchanged(monkeypatch):
     monkeypatch.setattr(ch, "_apply_allocations", boom)
     monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
 
-    ctx = FakeContext()
-    await ch.poll_signal(ctx)
+    await ch.poll_signal(fake_context)
 
     assert "unchanged" in ch._last_poll_status
