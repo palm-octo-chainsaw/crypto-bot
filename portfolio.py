@@ -193,6 +193,8 @@ class Portfolio:
                 actual_sell = free_amount * fraction
                 if actual_sell <= 0:
                     continue
+                if actual_sell * prices[sell_token] < MIN_TRADE_USD:
+                    continue  # not enough free balance to make this a non-dust cross-trade
 
                 symbol, side = direct
                 pair_display = f"{sell_token}->{buy_token} via {symbol}"
@@ -227,7 +229,7 @@ class Portfolio:
                     break  # this sell_token is done; move to the next
         return results
 
-    def _execute_sells(self, exchange, sells: dict, dry_run: bool) -> list:
+    def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:
         """Sell planned_amount/holdings (capped at 1.0) of each token's free exchange balance."""
         results = []
         if not sells:
@@ -250,8 +252,15 @@ class Portfolio:
                 continue
 
             fraction = min(planned_amount / holdings, 1.0)
+            sellable = free_amount * fraction
+            sellable_usd = sellable * prices.get(token, 0.0)
+            if sellable_usd < MIN_TRADE_USD:
+                logger.info("Sellable %s ($%.2f) below minimum $%.2f — dust", token, sellable_usd, MIN_TRADE_USD)
+                results.append({"symbol": pair_display, "side": "sell", "amount": sellable,
+                                "usd_value": sellable_usd, "dust": True})
+                continue
             try:
-                sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+                sell_amount = apply_precision(exchange, f"{token}/{STABLE}", sellable)
             except Exception as err:
                 logger.warning("Sell precision error for %s (free=%s fraction=%.4f): %s", token, free_amount, fraction, err)
                 results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
@@ -382,7 +391,7 @@ class Portfolio:
                 return "⚠️ Failed to connect to Binance. Check logs for details."
 
             results.extend(self._execute_cross_pairs(exchange, sells, buys, prices, dry_run))
-            results.extend(self._execute_sells(exchange, sells, dry_run))
+            results.extend(self._execute_sells(exchange, sells, prices, dry_run))
             results.extend(self._execute_buys(exchange, buys, prices, dry_run))
 
         if not dry_run:
