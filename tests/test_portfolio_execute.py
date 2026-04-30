@@ -99,3 +99,25 @@ def test_sell_zero_free_balance_skips_order():
 
     assert ex.orders == []
     assert results[0]["error"] == "zero balance"
+
+
+def test_sell_below_min_lot_skips_without_aborting_rebalance():
+    """When apply_precision raises (amount below market min lot), skip leg and continue."""
+    from ccxt.base.errors import InvalidOrder
+
+    class PrecisionFailExchange(FakeExchange):
+        def amount_to_precision(self, symbol, amount):
+            if symbol == "ETH/USDC":
+                raise InvalidOrder(f"binance amount of {symbol} must be greater than minimum amount precision of 0.0001")
+            return f"{float(amount):.6f}"
+
+    ex = PrecisionFailExchange(
+        free={"ETH": 0.00005, "BTC": 0.5},
+        markets={"ETH/USDC": {}, "BTC/USDC": {}},
+    )
+    portfolio = _portfolio({"ETH": 0.00005, "BTC": 0.5})
+    results = portfolio._execute_sells(ex, {"ETH": 0.00005, "BTC": 0.1}, dry_run=False)
+
+    eth_result = next(r for r in results if r.get("symbol") == "ETH/USDC")
+    assert eth_result["error"] == "size below precision"
+    assert any(o[1] == "BTC/USDC" for o in ex.orders), "BTC sell should still execute despite ETH precision failure"

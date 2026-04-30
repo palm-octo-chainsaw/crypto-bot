@@ -184,7 +184,12 @@ class Portfolio:
                 continue
 
             fraction = min(planned_amount / holdings, 1.0)
-            sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+            try:
+                sell_amount = apply_precision(exchange, f"{token}/{STABLE}", free_amount * fraction)
+            except Exception as err:
+                logger.warning("Sell precision error for %s (free=%s fraction=%.4f): %s", token, free_amount, fraction, err)
+                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
+                continue
             if sell_amount <= 0:
                 logger.warning("Sell size for %s rounded to 0 (free=%s fraction=%.4f)", token, free_amount, fraction)
                 results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
