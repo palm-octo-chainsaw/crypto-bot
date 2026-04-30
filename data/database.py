@@ -158,6 +158,24 @@ def get_latest_allocations() -> dict | None:
     return json.loads(row[0]) if row else None
 
 
+def get_recent_trades(limit: int = 5) -> list[dict]:
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT timestamp, symbol, side, amount, usd_value, status, dry_run
+           FROM trades ORDER BY id DESC LIMIT ?""",
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "timestamp": r[0], "symbol": r[1], "side": r[2], "amount": r[3],
+            "usd_value": r[4], "status": r[5], "dry_run": bool(r[6]),
+        }
+        for r in rows
+    ]
+
+
 def get_latest_message_timestamp() -> str | None:
     conn = get_connection()
     cursor = conn.execute("SELECT message_timestamp FROM signals ORDER BY id DESC LIMIT 1")
