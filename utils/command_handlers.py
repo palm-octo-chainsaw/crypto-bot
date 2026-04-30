@@ -8,7 +8,7 @@ from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
-from data.database import record_signal, get_latest_message_timestamp
+from data.database import record_signal, get_latest_message_timestamp, get_latest_allocations
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,13 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _reply(update, portfolio.execute_rebalance(dry_run=not live))
 
 
+def _allocations_match(a: dict | None, b: dict | None, tol: float = 0.01) -> bool:
+    if a is None or b is None:
+        return a is b
+    keys = set(a) | set(b)
+    return all(abs(a.get(k, 0.0) - b.get(k, 0.0)) <= tol for k in keys)
+
+
 def _apply_allocations(allocations: dict) -> None:
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
@@ -211,7 +218,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     last_ts = get_latest_message_timestamp()
-    if signal_time and last_ts and signal_time == last_ts:
+    if signal_time and last_ts and signal_time == last_ts and _allocations_match(allocations, get_latest_allocations()):
         await _reply(update, f"ℹ️ Signal unchanged — same timestamp ({signal_time}).", formatted=False)
         return
 
@@ -332,7 +339,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     last_ts = get_latest_message_timestamp()
-    if signal_time and last_ts and signal_time == last_ts:
+    if signal_time and last_ts and signal_time == last_ts and _allocations_match(allocations, get_latest_allocations()):
         logger.info("poll_signal: signal timestamp unchanged (%s)", signal_time)
         _last_poll_status = f"unchanged (timestamp {signal_time})"
         return
