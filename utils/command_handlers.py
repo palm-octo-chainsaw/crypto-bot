@@ -11,7 +11,7 @@ from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
 from data.database import (
     record_signal, get_latest_message_timestamp, get_latest_allocations,
-    get_recent_trades,
+    get_recent_trades, get_snapshot_at_or_before, get_earliest_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,7 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
         BotCommand("status", "Show scheduled poller status"),
         BotCommand("info", "Show app version, poller, signal, portfolio, connectivity"),
+        BotCommand("performance", "Show portfolio performance over 24h/7d/30d/all"),
     ])
 
 
@@ -209,6 +210,62 @@ def _format_info() -> str:
     ]
     blocks = ["\n".join(section) for section in sections]
     return "\n\n".join(blocks)
+
+
+PERFORMANCE_WINDOWS: list[tuple[str, timedelta | None]] = [
+    ("24h", timedelta(hours=24)),
+    ("7d", timedelta(days=7)),
+    ("30d", timedelta(days=30)),
+    ("all", None),
+]
+PERFORMANCE_WINDOW_KEYS = [label for label, _ in PERFORMANCE_WINDOWS]
+PERFORMANCE_USAGE = "⚠️ Usage: /performance [" + "|".join(PERFORMANCE_WINDOW_KEYS) + "]"
+
+
+def _format_performance_line(label: str, delta: timedelta | None, end_value: float, now: datetime) -> str:
+    if delta is None:
+        snap = get_earliest_snapshot()
+    else:
+        snap = get_snapshot_at_or_before(now - delta)
+    if snap is None or snap["total_value_usd"] <= 0:
+        return f"{label}: insufficient history"
+    start_value = snap["total_value_usd"]
+    pnl = end_value - start_value
+    pct = pnl / start_value * 100
+    emoji = "📈" if pnl >= 0 else "📉"
+    sign = "+" if pnl >= 0 else "-"
+    return f"{label}: {sign}${abs(pnl):,.2f} ({sign}{abs(pct):.2f}%) {emoji}"
+
+
+def _format_performance(arg: str | None) -> str:
+    if arg is not None and arg.lower() not in PERFORMANCE_WINDOW_KEYS:
+        return PERFORMANCE_USAGE
+    portfolio.update_portfolio()
+    _, _, total = portfolio.fetch_live_data()
+    now = datetime.now(timezone.utc)
+    selected = (
+        PERFORMANCE_WINDOWS
+        if arg is None
+        else [w for w in PERFORMANCE_WINDOWS if w[0] == arg.lower()]
+    )
+    lines = [
+        "📊 *Portfolio Performance*",
+        f"Total: ${total:,.2f} USD",
+        "",
+    ]
+    lines.extend(_format_performance_line(label, delta, total, now) for label, delta in selected)
+    return "\n".join(lines)
+
+
+async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    arg = context.args[0] if context.args else None
+    try:
+        message = _format_performance(arg)
+    except Exception as error:
+        logger.error("Command failed: %s", error, exc_info=True)
+        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        return
+    await _reply(update, message)
 
 
 async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
