@@ -5,6 +5,7 @@ from utils.command_handlers import (
     post_init, post_stop, check, set_target,
     get_targets, get_total, get_spot_balance,
     get_leverage_balance, rebalance, fetch_signal, poll_signal, status, info,
+    performance,
 )
 
 
@@ -27,6 +28,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("fetch_signal", fetch_signal))
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("info", info))
+    app.add_handler(CommandHandler("performance", performance))
 
     app.job_queue.run_repeating(poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=30)
 

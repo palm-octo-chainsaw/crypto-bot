@@ -176,6 +176,28 @@ def get_recent_trades(limit: int = 5) -> list[dict]:
     ]
 
 
+def get_snapshot_at_or_before(target_ts: datetime) -> dict | None:
+    conn = get_connection()
+    cursor = conn.execute(
+        """SELECT timestamp, total_value_usd FROM snapshots
+           WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT 1""",
+        (target_ts.isoformat(),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return {"timestamp": row[0], "total_value_usd": row[1]} if row else None
+
+
+def get_earliest_snapshot() -> dict | None:
+    conn = get_connection()
+    cursor = conn.execute(
+        "SELECT timestamp, total_value_usd FROM snapshots ORDER BY timestamp ASC LIMIT 1"
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return {"timestamp": row[0], "total_value_usd": row[1]} if row else None
+
+
 def get_latest_message_timestamp() -> str | None:
     conn = get_connection()
     cursor = conn.execute("SELECT message_timestamp FROM signals ORDER BY id DESC LIMIT 1")
