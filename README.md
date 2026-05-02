@@ -152,3 +152,5 @@ Trades below the `MIN_TRADE_USD` threshold (default $1) are skipped as dust. Ass
 ## Signal Polling
 
 The bot polls TRW for new RSPS signals every 10 minutes. Each signal's message timestamp is normalized (relative dates like "Today at 3:09 AM" become absolute `2026-04-18 03:09`) and stored in the database. Signals are deduplicated by timestamp to avoid reprocessing stale data. If TRW loads the page at an old scroll position, the scraper clicks the "Viewing older messages" banner to jump to the latest.
+
+When a new signal is detected, targets are updated and the auto-rebalance only fires if any asset drifts more than 3% from the new targets. Otherwise the signal is applied silently and trades are skipped.
