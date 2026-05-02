@@ -52,6 +52,11 @@ async def test_poll_signal_reapplies_on_edited_signal(monkeypatch, fake_context)
     applied = {}
     monkeypatch.setattr(ch, "_apply_allocations", lambda allocs: applied.update(allocs=allocs))
 
+    def fake_listener():
+        ch.portfolio.send_rebalance = True
+        return "drift summary"
+    monkeypatch.setattr(ch.portfolio, "listener", fake_listener)
+
     rebalanced = {"called": False}
     monkeypatch.setattr(ch.portfolio, "execute_rebalance", lambda dry_run=False: rebalanced.update(called=True) or "ok")
 
@@ -83,3 +88,31 @@ async def test_poll_signal_skips_when_unchanged(monkeypatch, fake_context):
     await ch.poll_signal(fake_context)
 
     assert "unchanged" in ch._last_poll_status
+
+
+@pytest.mark.asyncio
+async def test_poll_signal_skips_rebalance_when_within_drift(monkeypatch, fake_context):
+    """New signal applied but portfolio already within 3% drift → no rebalance."""
+    new_allocs = {"BTC": 51.0, "ETH": 33.0, "USDC": 16.0}
+    timestamp = "2026-04-30 00:25"
+
+    async def fake_scrape():
+        return new_allocs, timestamp
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-04-30 00:10")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"BTC": 50.0, "ETH": 33.3, "USDC": 16.7})
+    monkeypatch.setattr(ch, "record_signal", lambda allocs, message_timestamp=None: 1)
+    monkeypatch.setattr(ch, "_apply_allocations", lambda allocs: None)
+
+    def fake_listener():
+        ch.portfolio.send_rebalance = False
+        return "within threshold"
+    monkeypatch.setattr(ch.portfolio, "listener", fake_listener)
+
+    def boom(*a, **kw):
+        raise AssertionError("execute_rebalance should not run when drift is within threshold")
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.poll_signal(fake_context)
+
+    assert "within drift threshold" in ch._last_poll_status

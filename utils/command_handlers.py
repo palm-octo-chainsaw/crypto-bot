@@ -553,6 +553,16 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
     )
 
+    check_summary = portfolio.listener()
+    if not portfolio.send_rebalance:
+        _last_poll_status = "new signal applied (within drift threshold)"
+        await context.bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"✅ Allocations within 3% drift — skipping rebalance.\n\n{check_summary}",
+            parse_mode="Markdown",
+        )
+        return
+
     try:
         result = portfolio.execute_rebalance(dry_run=False)
     except Exception as error:
