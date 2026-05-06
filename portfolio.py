@@ -84,18 +84,18 @@ class Portfolio:
     def evaluate_symbol(self, values: dict, total_value: float) -> None:
         for symbol, value in values.items():
             current_pct = (value / total_value) * 100
-            target_pct = int(self.targets[symbol])
+            target_pct = float(self.targets[symbol])
             diff = current_pct - target_pct
             arrow = "🔺" if diff > 0 else "🔻"
 
             self.summary.add_summary(
-                f"${symbol}: {current_pct:.2f}% (Target: {target_pct}%) {arrow} {diff:.2f}%"
+                f"${symbol}: {current_pct:.2f}% (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
             )
 
             if abs(diff) > REBALANCE_THRESHOLD_PCT:
                 self.summary.add_rebalance(
                     f"⚠️ *Rebalance Needed*: ${symbol} is off by {diff:+.2f}% "
-                    f"(Current: {current_pct:.2f}%; Target: {target_pct}%)"
+                    f"(Current: {current_pct:.2f}%; Target: {target_pct:.2f}%)"
                 )
                 self.send_rebalance = True
 

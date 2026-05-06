@@ -232,6 +232,14 @@ async def _extract_timestamp(element) -> str | None:
     return None
 
 
+async def _message_body_text(element) -> str:
+    """Return the message's own body text, excluding any reply-quote preview."""
+    body = element.locator("span.custom-break-words")
+    if await body.count() > 0:
+        return await body.first.inner_text()
+    return await element.inner_text()
+
+
 async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     """Extract RSPS signal from the loaded channel page."""
     messages = page.locator('[class*="message"], [class*="chat"], [class*="post"]')
@@ -242,10 +250,11 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     signal_time = None
     signal_element = None
     for idx in range(count - 1, max(count - 20, -1), -1):
-        text = await messages.nth(idx).inner_text()
+        element = messages.nth(idx)
+        text = await _message_body_text(element)
         if SIGNAL_MARKER in text.lower():
             signal_text = text
-            signal_element = messages.nth(idx)
+            signal_element = element
             signal_time = await _extract_timestamp(signal_element)
             logger.info("[TRW] Found signal message at index %d (posted: %s)", idx, signal_time)
             break
