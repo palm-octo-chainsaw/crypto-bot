@@ -2,7 +2,6 @@ name: Docker Publish
 
 on:
   push:
-    branches: [master]
     tags: ["v*.*.*"]
   pull_request:
     types: [opened, synchronize, reopened]
@@ -21,8 +20,6 @@ jobs:
       version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Resolve version
         id: version
@@ -33,12 +30,8 @@ jobs:
           elif [ -n "${{ inputs.version }}" ]; then
             echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
             echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
           else
-            described=$(git describe --tags --always)
-            echo "value=${described}" >> "$GITHUB_OUTPUT"
+            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
             echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
           fi
 
@@ -62,7 +55,7 @@ jobs:
 
   deploy:
     needs: publish
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: self-hosted
     steps:
       - name: Pull and restart container
