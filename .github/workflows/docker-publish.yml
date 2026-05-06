@@ -23,8 +23,7 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            short_sha=$(git rev-parse --short "${{ github.event.pull_request.head.sha }}")
-            echo "value=pr-${{ github.event.pull_request.number }}-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "value=pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
             echo "extra_tag=" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.version }}" ]; then
             echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
