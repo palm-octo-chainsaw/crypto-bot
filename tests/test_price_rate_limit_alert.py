@@ -60,3 +60,23 @@ async def test_poll_signal_alert_fires_again_after_cooldown(monkeypatch, fake_co
     await ch.poll_signal(fake_context)
 
     assert any("CoinGecko rate-limited" in m for m in fake_context.bot.sent)
+
+
+@pytest.mark.asyncio
+async def test_poll_signal_alerts_when_execute_rebalance_rate_limited(monkeypatch, fake_context, stub_scrape):
+    """If listener succeeds but execute_rebalance hits 429, still alert."""
+    monkeypatch.setattr(ch, "_price_rate_limit_alerted_at", None)
+
+    def ok_listener():
+        ch.portfolio.send_rebalance = True
+        return "drift summary"
+    monkeypatch.setattr(ch.portfolio, "listener", ok_listener)
+
+    def raising_rebalance(dry_run=False):
+        raise PriceRateLimitError("429")
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", raising_rebalance)
+
+    await ch.poll_signal(fake_context)
+
+    assert any("CoinGecko rate-limited" in m for m in fake_context.bot.sent)
+    assert ch._last_poll_status == "price API rate-limited"
