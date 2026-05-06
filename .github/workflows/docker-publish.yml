@@ -2,6 +2,7 @@ name: Docker Publish
 
 on:
   push:
+    branches: [master]
     tags: ["v*.*.*"]
   pull_request:
     types: [opened, synchronize, reopened]
@@ -16,8 +17,12 @@ jobs:
     # Skip PRs from forks: secrets aren't available to forked PR runs.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve version
         id: version
@@ -28,8 +33,12 @@ jobs:
           elif [ -n "${{ inputs.version }}" ]; then
             echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
             echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
-          else
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
+          else
+            described=$(git describe --tags --always)
+            echo "value=${described}" >> "$GITHUB_OUTPUT"
             echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
           fi
 
@@ -50,3 +59,17 @@ jobs:
             ${{ steps.version.outputs.extra_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: self-hosted
+    steps:
+      - name: Pull and restart container
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          cd ~/crypto-bot
+          VERSION="$VERSION" docker compose pull
+          VERSION="$VERSION" docker compose up -d
+          docker ps --filter name=crypto-bot --format '{{.Image}} {{.Status}}'
