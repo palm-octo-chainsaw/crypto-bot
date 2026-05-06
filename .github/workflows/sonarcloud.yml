@@ -25,7 +25,9 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests with coverage
-        run: pytest --cov=. --cov-report=xml --cov-branch
+        run: |
+          mkdir -p logs
+          pytest --cov=. --cov-report=xml --cov-branch
 
       - name: SonarCloud Scan
         uses: SonarSource/sonarqube-scan-action@v5
