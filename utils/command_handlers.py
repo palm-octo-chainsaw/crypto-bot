@@ -9,6 +9,7 @@ from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
+from data.prices import PriceRateLimitError
 from data.database import (
     record_signal, get_latest_message_timestamp, get_latest_allocations,
     get_recent_trades, get_snapshot_at_or_before, get_earliest_snapshot,
@@ -284,7 +285,13 @@ async def _reply(update: Update, message: str, *, formatted: bool = True) -> Non
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(portfolio.listener(), parse_mode="Markdown")
+    try:
+        message = portfolio.listener()
+    except Exception as error:
+        logger.error("Command failed: %s", error, exc_info=True)
+        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        return
+    await update.message.reply_text(message, parse_mode="Markdown")
 
 
 async def get_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -427,9 +434,11 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 SCRAPE_FAILURE_ALERT_THRESHOLD = 3
 RATE_LIMIT_COOLDOWN = timedelta(minutes=40)
+PRICE_RATE_LIMIT_ALERT_COOLDOWN = timedelta(minutes=10)
 _scrape_failure_count = 0
 _rate_limit_until: datetime | None = None
 _credentials_invalid: bool = False
+_price_rate_limit_alerted_at: datetime | None = None
 
 
 def _cooldown_remaining(now: datetime) -> timedelta | None:
@@ -449,6 +458,24 @@ def _set_rate_limit_cooldown(now: datetime, error: TRWRateLimitError) -> timedel
     duration = timedelta(minutes=minutes)
     _rate_limit_until = now + duration
     return duration
+
+
+async def _alert_price_rate_limit(context: ContextTypes.DEFAULT_TYPE, error: Exception) -> None:
+    """Send a Telegram alert on CoinGecko 429, throttled to one per cooldown window."""
+    global _price_rate_limit_alerted_at
+    now = datetime.now(timezone.utc)
+    if (
+        _price_rate_limit_alerted_at is not None
+        and now - _price_rate_limit_alerted_at < PRICE_RATE_LIMIT_ALERT_COOLDOWN
+    ):
+        return
+    _price_rate_limit_alerted_at = now
+    logger.warning("CoinGecko rate-limited: %s", error)
+    await context.bot.send_message(
+        chat_id=CHAT_ID,
+        text="⏳ *CoinGecko rate-limited* — price fetches failing. Will retry next poll.",
+        parse_mode="Markdown",
+    )
 
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -553,7 +580,12 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
     )
 
-    check_summary = portfolio.listener()
+    try:
+        check_summary = portfolio.listener()
+    except PriceRateLimitError as error:
+        _last_poll_status = "price API rate-limited"
+        await _alert_price_rate_limit(context, error)
+        return
     if not portfolio.send_rebalance:
         _last_poll_status = "new signal applied (within drift threshold)"
         await context.bot.send_message(
@@ -565,6 +597,10 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         result = portfolio.execute_rebalance(dry_run=False)
+    except PriceRateLimitError as error:
+        _last_poll_status = "price API rate-limited"
+        await _alert_price_rate_limit(context, error)
+        return
     except Exception as error:
         logger.error("poll_signal rebalance failed: %s", error, exc_info=True)
         _last_poll_status = "rebalance failed"
