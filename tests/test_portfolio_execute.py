@@ -202,3 +202,57 @@ def test_sell_precision_error_caught_when_dust_check_passes():
     eth_result = next(r for r in results if r.get("symbol") == "ETH/USDC")
     assert eth_result["error"] == "size below precision"
     assert any(o[1] == "BTC/USDC" for o in ex.orders)
+
+
+def test_execute_hype_sell_uses_master_wallet_free_balance(monkeypatch):
+    """Regression: sell must clamp to master-wallet free HYPE, not ccxt's view of the agent wallet.
+
+    The agent wallet (HYPERLIQUID_ACCOUNT_ADDRESS) returns 0 free HYPE from ccxt, which previously
+    clamped the order to 0 and tripped Hyperliquid's 'Order has zero size' rejection."""
+    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
+    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
+
+    hl = MagicMock()
+    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
+
+    placed = []
+    def fake_place_order(exchange, symbol, side, amount, dry_run, price=None):
+        placed.append({"symbol": symbol, "side": side, "amount": amount})
+        return {"id": "hl1", "status": "closed", **placed[-1]}
+    monkeypatch.setattr(pf, "place_order", fake_place_order)
+
+    portfolio = _portfolio({"HYPE": 48.37})
+    portfolio.balance = MagicMock()
+    portfolio.balance.get_hyperliquid_free_balance.return_value = 48.37
+
+    results = portfolio._execute_hype(amount=33.0, side="sell", prices={"HYPE": 48.5}, dry_run=False)
+
+    portfolio.balance.get_hyperliquid_free_balance.assert_called_once_with("HYPE")
+    assert len(placed) == 1
+    assert placed[0]["side"] == "sell"
+    assert placed[0]["amount"] == pytest.approx(33.0)
+    assert results[0]["status"] == "closed"
+
+
+def test_execute_hype_sell_skips_when_master_wallet_free_is_zero(monkeypatch):
+    """If master-wallet free HYPE is 0 (e.g. all locked), skip cleanly instead of submitting a 0-size order."""
+    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
+    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
+
+    hl = MagicMock()
+    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
+
+    placed = []
+    monkeypatch.setattr(pf, "place_order",
+                        lambda *a, **kw: placed.append(a) or {"id": "x", "status": "closed"})
+
+    portfolio = _portfolio({"HYPE": 48.37})
+    portfolio.balance = MagicMock()
+    portfolio.balance.get_hyperliquid_free_balance.return_value = 0.0
+
+    results = portfolio._execute_hype(amount=33.0, side="sell", prices={"HYPE": 48.5}, dry_run=False)
+
+    assert placed == []
+    assert results[0]["error"] == "size below precision"

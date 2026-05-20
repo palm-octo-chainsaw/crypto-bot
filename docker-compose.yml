@@ -1,10 +1,10 @@
 services:
   bot:
-    image: a77878123/crypto-bot:${VERSION:-v1.5.0}
+    image: a77878123/crypto-bot:${VERSION:-v1.5.1}
     container_name: crypto-bot
     env_file: .env
     environment:
-      APP_VERSION: ${VERSION:-v1.5.0}
+      APP_VERSION: ${VERSION:-v1.5.1}
     volumes:
       - ./data/portfolio.db:/app/data/portfolio.db
       - ./config:/app/config

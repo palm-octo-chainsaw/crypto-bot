@@ -170,22 +170,30 @@ class Balance:
         self._load_binance_balances()
         return self._binance_balances.get(symbol.upper(), 0.0)
 
-    def get_hyperliquid_balances(self) -> dict:
+    def _fetch_hyperliquid_spot_balances(self) -> list[dict]:
         if not META_MASK:
             logger.warning("META_MASK not set; Hyperliquid balances will be 0.")
-            return {}
+            return []
         try:
             url = "https://api.hyperliquid.xyz/info"
             payload = {"type": "spotClearinghouseState", "user": META_MASK}
             response = requests.post(url, json=payload, timeout=10)
             response.raise_for_status()
-            return {
-                entry["coin"]: float(entry.get("total", 0.0))
-                for entry in response.json().get("balances", [])
-            }
+            return response.json().get("balances", [])
         except Exception:
             logger.error("Error fetching balances from Hyperliquid", exc_info=True)
-        return {}
+            return []
+
+    def get_hyperliquid_balances(self) -> dict:
+        return {entry["coin"]: float(entry.get("total", 0.0))
+                for entry in self._fetch_hyperliquid_spot_balances()}
+
+    def get_hyperliquid_free_balance(self, coin: str) -> float:
+        """Free (sellable) balance = total - hold. `hold` is amount locked in open orders."""
+        for entry in self._fetch_hyperliquid_spot_balances():
+            if entry.get("coin") == coin:
+                return float(entry.get("total", 0.0)) - float(entry.get("hold", 0.0))
+        return 0.0
 
     def get_raw_kraken_balance(self) -> dict:
         if not self.kraken_client:
