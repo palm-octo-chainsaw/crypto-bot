@@ -181,7 +181,7 @@ class Balance:
             response.raise_for_status()
             return response.json().get("balances", [])
         except Exception:
-            logger.error("Error fetching balances from Hyperliquid", exc_info=True)
+            logger.exception("Error fetching balances from Hyperliquid")
             return []
 
     def get_hyperliquid_balances(self) -> dict:
