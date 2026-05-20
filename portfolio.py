@@ -15,6 +15,7 @@ logger = setup_logging('info')
 
 STABLE = "USDC"
 REBALANCE_THRESHOLD_PCT = 3.0
+ERR_SIZE_BELOW_PRECISION = "size below precision"
 
 
 def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
@@ -263,11 +264,11 @@ class Portfolio:
                 sell_amount = apply_precision(exchange, f"{token}/{STABLE}", sellable)
             except Exception as err:
                 logger.warning("Sell precision error for %s (free=%s fraction=%.4f): %s", token, free_amount, fraction, err)
-                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
+                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": ERR_SIZE_BELOW_PRECISION})
                 continue
             if sell_amount <= 0:
                 logger.warning("Sell size for %s rounded to 0 (free=%s fraction=%.4f)", token, free_amount, fraction)
-                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": "size below precision"})
+                results.append({"symbol": pair_display, "side": "sell", "amount": 0, "error": ERR_SIZE_BELOW_PRECISION})
                 continue
 
             try:
@@ -352,9 +353,14 @@ class Portfolio:
         try:
             trade_amount = abs(amount)
             if side == "sell":
-                free_hype = float(hl.fetch_balance().get("free", {}).get("HYPE", 0.0))
+                # ccxt fetch_balance queries the agent wallet (HYPERLIQUID_ACCOUNT_ADDRESS),
+                # which holds no funds. Query the master wallet (META_MASK) instead.
+                free_hype = self.balance.get_hyperliquid_free_balance("HYPE")
                 trade_amount = min(trade_amount, free_hype)
             trade_amount = apply_precision(hl, symbol, trade_amount)
+            if trade_amount <= 0:
+                logger.warning("HYPE %s size rounded to 0 — skipping", side)
+                return [{"symbol": symbol, "side": side, "amount": 0, "error": ERR_SIZE_BELOW_PRECISION}]
             hype_price = prices.get("HYPE")
             result = place_order(hl, symbol, side, trade_amount, dry_run, price=hype_price)
             return [result]
