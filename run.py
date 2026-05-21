@@ -30,6 +30,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("performance", performance))
 
-    app.job_queue.run_repeating(poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=30)
+    app.job_queue.run_repeating(poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=10)
 
     app.run_polling()
