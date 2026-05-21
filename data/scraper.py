@@ -347,7 +347,8 @@ async def _jump_to_latest(page) -> None:
     btn = page.get_by_text("Viewing older messages", exact=False)
     if await btn.count() > 0:
         logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
-        await btn.first.click()
+        # Chat input overlay can intercept pointer events; force the click past it.
+        await btn.first.click(force=True)
         await page.wait_for_timeout(5000)
     else:
         logger.info("[TRW] Already viewing latest messages")
