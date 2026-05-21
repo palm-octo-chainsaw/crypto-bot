@@ -105,8 +105,10 @@ async def _login(page) -> None:
     await password_input.first.wait_for(timeout=5000)
     await password_input.first.fill(TRW_PASSWORD)
 
-    submit_btn = page.get_by_text("Log In", exact=False)
-    await submit_btn.first.click()
+    # Target the button element specifically: the modal heading "Log In To The Real World"
+    # also matches loose "Log In" text in DOM order, so a text-only locator clicks the heading.
+    submit_btn = page.locator('button:has-text("Log In"), button[type="submit"]').first
+    await submit_btn.click()
     await page.wait_for_timeout(5000)
 
     rate_limit_banner = page.locator("text=/Too many (requests|failed login)/i")
@@ -153,8 +155,10 @@ async def _login(page) -> None:
     await page.keyboard.type(code, delay=100)
     await page.wait_for_timeout(1000)
 
-    confirm_btn = page.get_by_text("Confirm", exact=False)
-    await confirm_btn.first.click(force=True)
+    # No button[type=submit] fallback: the hidden Log In form is still in DOM
+    # behind the TOTP modal, so a generic submit selector would match the wrong button.
+    confirm_btn = page.locator('button:has-text("Confirm")').first
+    await confirm_btn.click(force=True)
     await page.wait_for_timeout(5000)
 
 
@@ -343,7 +347,8 @@ async def _jump_to_latest(page) -> None:
     btn = page.get_by_text("Viewing older messages", exact=False)
     if await btn.count() > 0:
         logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
-        await btn.first.click()
+        # Chat input overlay can intercept pointer events; force the click past it.
+        await btn.first.click(force=True)
         await page.wait_for_timeout(5000)
     else:
         logger.info("[TRW] Already viewing latest messages")
