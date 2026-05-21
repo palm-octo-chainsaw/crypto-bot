@@ -155,7 +155,9 @@ async def _login(page) -> None:
     await page.keyboard.type(code, delay=100)
     await page.wait_for_timeout(1000)
 
-    confirm_btn = page.locator('button:has-text("Confirm"), button[type="submit"]').first
+    # No button[type=submit] fallback: the hidden Log In form is still in DOM
+    # behind the TOTP modal, so a generic submit selector would match the wrong button.
+    confirm_btn = page.locator('button:has-text("Confirm")').first
     await confirm_btn.click(force=True)
     await page.wait_for_timeout(5000)
 
