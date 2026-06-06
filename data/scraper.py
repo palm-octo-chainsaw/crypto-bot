@@ -88,17 +88,28 @@ def parse_signal(text: str) -> dict[str, float]:
 
 async def _login(page) -> None:
     """Perform full login flow: email/password + TOTP."""
-    logger.info("[TRW] Clicking login button...")
-    login_btn = page.get_by_text("LOGIN TO YOUR ACCOUNT", exact=False)
-    if await login_btn.count() == 0:
-        login_btn = page.get_by_text("Login", exact=False)
-    await login_btn.first.wait_for(timeout=10000)
-    await login_btn.first.click()
-    await page.wait_for_timeout(3000)
+    logger.info("[TRW] Navigating to login form...")
+    # The landing page links to the login form on a separate route via an anchor
+    # ("Log in to your account", href "/auth/login" -> redirects to /login/auth).
+    # Earlier text locators matched a non-navigating "LOGIN" element and left us on
+    # the landing page, where no input fields exist. Target the anchor by href and
+    # wait for the form route so the email field is actually present.
+    login_link = page.locator('a[href*="/auth/login"]')
+    await login_link.first.wait_for(timeout=10000)
+    await login_link.first.click()
+    await page.wait_for_url("**/login/auth**", timeout=15000)
 
     logger.info("[TRW] Filling login form...")
     email_input = page.locator('input[type="email"], input[name="email"], input[placeholder*="mail"], input[placeholder*="Email"]')
-    await email_input.first.wait_for(timeout=15000)
+    try:
+        await email_input.first.wait_for(timeout=15000)
+    except PwTimeout:
+        try:
+            await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+            logger.error("[TRW] Login form did not appear — screenshot saved to %s", DEBUG_SCREENSHOT)
+        except Exception:
+            logger.exception("[TRW] Login form did not appear and screenshot capture failed")
+        raise
     await email_input.first.fill(TRW_EMAIL)
 
     password_input = page.locator('input[type="password"]')
@@ -370,12 +381,17 @@ async def fetch_signal() -> tuple[dict[str, float], str | None]:
             allocations, signal_time = await _extract_signal(page)
             return allocations, signal_time
         except PwTimeout as err:
-            if page:
+            saved = False
+            if page is not None:
                 try:
                     await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+                    saved = True
                 except Exception:
-                    pass
-            logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
+                    logger.exception("[TRW] Failed to save debug screenshot")
+            if saved:
+                logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
+            else:
+                logger.error("[TRW] Timeout before page was ready — no screenshot captured (%s)", err)
             raise RuntimeError(f"TRW page timed out: {err}") from err
         finally:
             if browser:
