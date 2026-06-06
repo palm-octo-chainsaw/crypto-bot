@@ -57,6 +57,7 @@ class FakePage:
         return FakeLocator(count=1, visible=True)
 
     async def wait_for_timeout(self, ms): pass
+    async def wait_for_url(self, url, timeout=None): pass
     async def screenshot(self, path=None, full_page=False):
         self.screenshots.append(path)
 
