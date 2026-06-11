@@ -293,6 +293,29 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     return allocations, signal_time
 
 
+async def _is_logged_out(page) -> bool:
+    """Return True if the page is showing the login screen instead of the chat.
+
+    A valid session keeps us on the /chat/ route. When the session expires, TRW
+    redirects to the login form. We treat any of these as logged-out:
+      - the URL is no longer on the /chat/ route
+      - the "Log In To The Real World" heading is present
+      - a password input is visible
+    """
+    if "/chat/" not in page.url:
+        return True
+
+    login_heading = page.get_by_text("Log In To The Real World", exact=False)
+    if await login_heading.count() > 0:
+        return True
+
+    password_input = page.locator('input[type="password"]')
+    if await password_input.count() > 0 and await password_input.first.is_visible():
+        return True
+
+    return False
+
+
 async def _open_channel(p, *, save_session: bool = True):
     """Open signal channel, handling login and device limits. Returns (browser, context, page)."""
     session_path = os.path.abspath(SESSION_DIR)
@@ -312,9 +335,12 @@ async def _open_channel(p, *, save_session: bool = True):
         await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await page.wait_for_timeout(3000)
 
-        # Check if we're still logged in
-        login_btn = page.get_by_text("LOGIN TO YOUR ACCOUNT", exact=False)
-        if await login_btn.count() > 0:
+        # Check if we're still logged in. A live session stays on the /chat/ route;
+        # an expired one redirects to the login form ("Log In To The Real World" with
+        # email/password inputs). Detect via several signals rather than one brittle
+        # text match — the prior "LOGIN TO YOUR ACCOUNT" string no longer matches the
+        # current login page, which left expired sessions undetected (0 messages found).
+        if await _is_logged_out(page):
             logger.info("[TRW] Session expired, logging in again...")
             await browser.close()
         else:

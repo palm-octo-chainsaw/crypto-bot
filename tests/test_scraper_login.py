@@ -4,7 +4,7 @@ import pytest
 from playwright.async_api import TimeoutError as PwTimeout
 
 import data.scraper as scraper
-from data.scraper import _login, TRWInvalidCredentialsError, TRWRateLimitError
+from data.scraper import _login, _is_logged_out, TRWInvalidCredentialsError, TRWRateLimitError
 
 
 class FakeFirst:
@@ -126,6 +126,54 @@ async def test_login_screenshots_when_form_does_not_appear():
     with pytest.raises(PwTimeout):
         await _login(page)
     assert page.screenshots, "should screenshot when the login form fails to appear"
+
+
+class _LoggedOutPage:
+    """Fake page for _is_logged_out: scripts url + which login signals are present."""
+
+    def __init__(self, *, url, heading=False, password_visible=False):
+        self.url = url
+        self._heading = heading
+        self._password_visible = password_visible
+
+    def get_by_text(self, text, exact=False):
+        present = self._heading and "Log In To The Real World" in text
+        return FakeLocator(count=1 if present else 0)
+
+    def locator(self, selector):
+        if 'input[type="password"]' in selector:
+            return FakeLocator(
+                count=1 if self._password_visible else 0,
+                visible=self._password_visible,
+            )
+        return FakeLocator(count=0)
+
+
+CHAT_URL = "https://app.jointherealworld.com/chat/01GGD/01H83"
+
+
+@pytest.mark.asyncio
+async def test_is_logged_out_when_redirected_off_chat_route():
+    page = _LoggedOutPage(url="https://app.jointherealworld.com/login/auth")
+    assert await _is_logged_out(page) is True
+
+
+@pytest.mark.asyncio
+async def test_is_logged_out_when_login_heading_present():
+    page = _LoggedOutPage(url=CHAT_URL, heading=True)
+    assert await _is_logged_out(page) is True
+
+
+@pytest.mark.asyncio
+async def test_is_logged_out_when_password_input_visible():
+    page = _LoggedOutPage(url=CHAT_URL, password_visible=True)
+    assert await _is_logged_out(page) is True
+
+
+@pytest.mark.asyncio
+async def test_is_logged_in_on_chat_route_without_login_signals():
+    page = _LoggedOutPage(url=CHAT_URL)
+    assert await _is_logged_out(page) is False
 
 
 class _FakeBrowser:

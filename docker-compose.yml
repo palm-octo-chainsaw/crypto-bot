@@ -3,8 +3,9 @@ services:
     image: a77878123/crypto-bot:${VERSION:-v1.5.1}
     container_name: crypto-bot
     env_file: .env
-    environment:
-      APP_VERSION: ${VERSION:-v1.5.1}
+    # APP_VERSION is baked into the image at build time (Dockerfile ARG VERSION ->
+    # ENV APP_VERSION). Do not override it here, or the reported version would track
+    # the runtime VERSION env (defaulting to a stale tag) instead of the actual image.
     volumes:
       - ./data/portfolio.db:/app/data/portfolio.db
       - ./config:/app/config
