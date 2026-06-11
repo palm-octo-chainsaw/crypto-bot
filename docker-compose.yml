@@ -1,6 +1,6 @@
 services:
   bot:
-    image: a77878123/crypto-bot:${VERSION:-v1.5.1}
+    image: a77878123/crypto-bot:${VERSION:-latest}
     container_name: crypto-bot
     env_file: .env
     # APP_VERSION is baked into the image at build time (Dockerfile ARG VERSION ->
