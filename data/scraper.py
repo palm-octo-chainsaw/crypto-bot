@@ -248,11 +248,20 @@ async def _extract_timestamp(element) -> str | None:
 
 
 async def _message_body_text(element) -> str:
-    """Return the message's own body text, excluding any reply-quote preview."""
+    """Return the message's own body text, excluding any reply-quote preview.
+
+    The message selector can match non-HTML nodes (e.g. SVG icons whose class
+    contains "chat"/"message"), and ``inner_text`` raises "Node is not an
+    HTMLElement" on those. Treat such nodes as empty so the scan continues to
+    real messages instead of aborting the whole extraction.
+    """
     body = element.locator("span.custom-break-words")
-    if await body.count() > 0:
-        return await body.first.inner_text()
-    return await element.inner_text()
+    try:
+        if await body.count() > 0:
+            return await body.first.inner_text()
+        return await element.inner_text()
+    except Exception:
+        return ""
 
 
 async def _extract_signal(page) -> tuple[dict[str, float], str | None]:

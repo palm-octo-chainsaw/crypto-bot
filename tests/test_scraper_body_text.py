@@ -49,6 +49,19 @@ async def test_body_text_falls_back_to_inner_text():
     assert await _message_body_text(el) == "full message text"
 
 
+@pytest.mark.asyncio
+async def test_body_text_returns_empty_for_non_html_node():
+    """Non-HTML nodes (e.g. SVG icons) raise on inner_text; treat as empty so
+    the extraction scan continues instead of aborting."""
+
+    class NonHtmlElement(FakeElement):
+        async def inner_text(self):
+            raise Exception("Locator.inner_text: Error: Node is not an HTMLElement")
+
+    el = NonHtmlElement(body_text=None)
+    assert await _message_body_text(el) == ""
+
+
 def test_parse_signal_reply_body_without_marker_yields_empty():
     """A reply whose body has no 'rsps signal' marker should not parse stale allocations."""
     reply_body = "Been long since"
