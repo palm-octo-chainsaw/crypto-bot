@@ -1,0 +1,28 @@
+# Persistent storage for the bot's on-disk state. The container image ships
+# without config/ or .trw_session/ (see .dockerignore), so these volumes hold:
+#   - config:  config/targets.json (read at startup, rewritten by /set_target
+#              and each applied signal)
+#   - session: .trw_session/state.json (Playwright TRW login state, reused
+#              across restarts to avoid re-logging in / hitting device limits)
+# storageClassName omitted -> uses the cluster default (local-path).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crypto-bot-config
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: crypto-bot-trw-session
+  namespace: default
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi

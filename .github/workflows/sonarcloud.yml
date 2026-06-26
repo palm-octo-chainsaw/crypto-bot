@@ -9,6 +9,20 @@ on:
 jobs:
   sonarcloud:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # Ephemeral CI-only database: allow passwordless local connections so
+          # no credential literal is needed (keeps secret scanners happy).
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,6 +39,8 @@ jobs:
           pip install pytest pytest-asyncio pytest-cov
 
       - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgresql://postgres@localhost:5432/postgres
         run: |
           mkdir -p logs
           pytest --cov=. --cov-report=xml --cov-branch
