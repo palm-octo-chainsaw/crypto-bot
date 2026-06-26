@@ -80,3 +80,48 @@ def test_record_trade_and_recent(db):
     assert len(trades) == 2
     assert trades[0]["symbol"] == "ETH" and trades[0]["dry_run"] is True
     assert trades[1]["symbol"] == "BTC" and trades[1]["dry_run"] is False
+
+
+def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, monkeypatch):
+    """End-to-end check of scripts/migrate_sqlite_to_pg against real Postgres."""
+    import sqlite3
+
+    # Build a minimal SQLite DB mirroring the pre-migration schema, with
+    # non-contiguous ids to prove the FK references and sequence reset.
+    sqlite_path = str(tmp_path / "portfolio.db")
+    s = sqlite3.connect(sqlite_path)
+    s.executescript(
+        """
+        CREATE TABLE signals (id INTEGER PRIMARY KEY, timestamp TEXT, allocations TEXT,
+                              total_pct REAL, message_timestamp TEXT);
+        CREATE TABLE snapshots (id INTEGER PRIMARY KEY, timestamp TEXT, signal_id INTEGER,
+                                total_value_usd REAL, balances TEXT, prices TEXT,
+                                values_usd TEXT, targets TEXT);
+        CREATE TABLE trades (id INTEGER PRIMARY KEY, timestamp TEXT, signal_id INTEGER,
+                             symbol TEXT, side TEXT, amount REAL, price REAL, usd_value REAL,
+                             status TEXT, order_id TEXT, dry_run INTEGER, fee_amount REAL,
+                             fee_currency TEXT, fee_rate REAL);
+        """
+    )
+    s.execute("INSERT INTO signals VALUES (5,'2026-06-01T00:00:00+00:00','{\"BTC\": 100.0}',100.0,'2026-06-01 00:00')")
+    s.execute("INSERT INTO snapshots VALUES (9,'2026-06-01T00:01:00+00:00',5,10000.0,'{}','{}','{}','{}')")
+    s.execute("INSERT INTO trades VALUES (3,'2026-06-01T00:02:00+00:00',5,'BTC','buy',0.1,60000.0,6000.0,'filled','o1',0,NULL,NULL,NULL)")
+    s.commit()
+    s.close()
+
+    # Point the migration script at the test schema (it binds its own names).
+    import scripts.migrate_sqlite_to_pg as mig
+    monkeypatch.setattr(mig, "get_connection", db.get_connection)
+    monkeypatch.setattr(mig, "init_db", db.init_db)
+
+    counts = mig.migrate(sqlite_path)
+    assert counts == {"signals": 1, "snapshots": 1, "trades": 1}
+
+    # Ids preserved; FK intact; sequence advanced so the next insert is id 6.
+    assert db.get_latest_signal_id() == 5
+    assert db.get_snapshot_at_or_before(datetime.now(timezone.utc))["total_value_usd"] == 10000.0
+    assert db.get_recent_trades()[0]["symbol"] == "BTC"
+    assert db.record_signal({"ETH": 100.0}) == 6
+
+    # Re-running is idempotent (ON CONFLICT DO NOTHING) — no duplicates/errors.
+    assert mig.migrate(sqlite_path) == {"signals": 1, "snapshots": 1, "trades": 1}

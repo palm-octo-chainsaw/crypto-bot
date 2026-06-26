@@ -58,11 +58,12 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: self-hosted
     steps:
-      - name: Pull and restart container
+      - name: Roll out new image to k8s
         env:
           VERSION: ${{ needs.publish.outputs.version }}
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
-          cd ~/crypto-bot
-          VERSION="$VERSION" docker compose pull
-          VERSION="$VERSION" docker compose up -d
-          docker ps --filter name=crypto-bot --format '{{.Image}} {{.Status}}'
+          sudo -n k3s kubectl -n default set image deployment/crypto-bot \
+            bot=a77878123/crypto-bot:"$VERSION"
+          sudo -n k3s kubectl -n default rollout status deployment/crypto-bot --timeout=180s
+          sudo -n k3s kubectl -n default get pods -l app=crypto-bot -o wide
