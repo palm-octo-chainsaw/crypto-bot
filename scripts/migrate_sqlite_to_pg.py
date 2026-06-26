@@ -11,8 +11,13 @@ Usage:
     DATABASE_URL=postgresql://user:pass@host:5432/cryptobot \
         python scripts/migrate_sqlite_to_pg.py path/to/portfolio.db
 """
+import os
 import sqlite3
 import sys
+
+# Allow running directly (`python scripts/migrate_sqlite_to_pg.py ...`) by
+# putting the repo root on the path so `data` resolves.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import get_connection, init_db
 
