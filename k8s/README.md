@@ -25,6 +25,13 @@ Run on the cluster host. The DB reuses the postgres superuser against a new
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 K="sudo -n k3s kubectl -n default"
 
+# 0. Build a Postgres-enabled image WITHOUT deploying. The deploy job only runs
+#    on tag pushes, so trigger the build via workflow_dispatch (this tags both
+#    :<version> and :latest). A tag push here would fail because the Deployment
+#    doesn't exist yet.
+#      gh workflow run docker-publish.yml -f version=v1.7.0
+#    Wait for it to finish before continuing.
+
 # 1. Create the dedicated database (superuser creds from postgres-secret).
 $K exec postgres-0 -- psql -U <superuser> -c "CREATE DATABASE cryptobot;"
 
