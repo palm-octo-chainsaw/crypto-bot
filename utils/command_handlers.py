@@ -22,6 +22,9 @@ portfolio = Portfolio()
 TARGETS_FILE = "config/targets.json"
 GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
 
+SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
+SIGNAL_POLL_JOB_NAME = "signal_poll"
+
 _last_poll_time: datetime | None = None
 _last_poll_status: str = "not yet run"
 _poll_success_count: int = 0
@@ -40,6 +43,7 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("rebalance", "Dry-run rebalance (/rebalance live to execute real trades)"),
         BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
         BotCommand("status", "Show scheduled poller status"),
+        BotCommand("puller", "Start or stop automatic TRW polling (/puller start|stop)"),
         BotCommand("info", "Show app version, poller, signal, portfolio, connectivity"),
         BotCommand("performance", "Show portfolio performance over 24h/7d/30d/all"),
     ])
@@ -67,9 +71,11 @@ async def post_stop(application: Application) -> None:
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     now = datetime.now(timezone.utc)
     last = _last_poll_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_poll_time else "never"
+    running = bool(_get_poll_jobs(context))
     lines = [
         "📡 *Poller Status*",
         "",
+        f"Puller: {'🟢 running' if running else '🛑 stopped'}",
         "Schedule: every 15 min",
         f"Last poll: {last}",
         f"Last result: {_last_poll_status}",
@@ -86,6 +92,38 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines.append(f"Successes: {_poll_success_count}")
     lines.append(f"Failures: {_poll_failure_count} (consecutive: {_scrape_failure_count})")
     await _reply(update, "\n".join(lines))
+
+
+def _get_poll_jobs(context: ContextTypes.DEFAULT_TYPE) -> tuple:
+    job_queue = context.job_queue
+    if job_queue is None:
+        return ()
+    return tuple(job_queue.get_jobs_by_name(SIGNAL_POLL_JOB_NAME))
+
+
+async def puller(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    action = context.args[0].lower() if context.args else None
+    if action == "stop":
+        jobs = _get_poll_jobs(context)
+        if not jobs:
+            await _reply(update, "ℹ️ Puller is already stopped.", formatted=False)
+            return
+        for job in jobs:
+            job.schedule_removal()
+        await _reply(update, "🛑 Puller stopped — automatic TRW polling paused.", formatted=False)
+    elif action == "start":
+        if _get_poll_jobs(context):
+            await _reply(update, "ℹ️ Puller is already running.", formatted=False)
+            return
+        context.job_queue.run_repeating(
+            poll_signal,
+            interval=SIGNAL_POLL_INTERVAL_SECONDS,
+            first=10,
+            name=SIGNAL_POLL_JOB_NAME,
+        )
+        await _reply(update, "🟢 Puller started — polling TRW every 15 min.", formatted=False)
+    else:
+        await update.message.reply_text("⚠️ Usage: /puller [start|stop]")
 
 
 def _format_uptime(delta: timedelta) -> str:
