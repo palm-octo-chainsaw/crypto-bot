@@ -46,7 +46,8 @@ $K apply -f k8s/pvc.yaml
 # 4. Migrate existing data (schema is created by the script). Run with the
 #    cleaned portfolio.db and DATABASE_URL pointing at cryptobot.
 DATABASE_URL="postgresql://<user>:<pass>@<host>:5432/cryptobot" \
-  python scripts/migrate_sqlite_to_pg.py /path/to/portfolio.db
+SQLITE_PATH=/path/to/portfolio.db \
+  python scripts/migrate_sqlite_to_pg.py
 
 # 5. Deploy the bot.
 $K apply -f k8s/deployment.yaml

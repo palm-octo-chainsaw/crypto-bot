@@ -9,7 +9,8 @@ Idempotent: rows that already exist (same id) are skipped via ON CONFLICT.
 
 Usage:
     DATABASE_URL=postgresql://user:pass@host:5432/cryptobot \
-        python scripts/migrate_sqlite_to_pg.py path/to/portfolio.db
+    SQLITE_PATH=path/to/portfolio.db \
+        python scripts/migrate_sqlite_to_pg.py
 """
 import os
 import sqlite3
@@ -65,7 +66,10 @@ def migrate(sqlite_path: str) -> dict[str, int]:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python scripts/migrate_sqlite_to_pg.py path/to/portfolio.db")
-    result = migrate(sys.argv[1])
+    # Source path comes from the environment (not a CLI arg) so the DB
+    # connection isn't driven by command-line input.
+    sqlite_path = os.environ.get("SQLITE_PATH")
+    if not sqlite_path:
+        sys.exit("set SQLITE_PATH to the source SQLite portfolio.db")
+    result = migrate(sqlite_path)
     print("Migrated rows:", result)
