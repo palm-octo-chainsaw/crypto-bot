@@ -5,11 +5,8 @@ from utils.command_handlers import (
     post_init, post_stop, check, set_target,
     get_targets, get_total, get_spot_balance,
     get_leverage_balance, rebalance, fetch_signal, poll_signal, status, info,
-    performance,
+    performance, puller, SIGNAL_POLL_INTERVAL_SECONDS, SIGNAL_POLL_JOB_NAME,
 )
-
-
-SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 
 
 if __name__ == "__main__":
@@ -29,7 +26,10 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("status", status))
     app.add_handler(CommandHandler("info", info))
     app.add_handler(CommandHandler("performance", performance))
+    app.add_handler(CommandHandler("puller", puller))
 
-    app.job_queue.run_repeating(poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=10)
+    app.job_queue.run_repeating(
+        poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=10, name=SIGNAL_POLL_JOB_NAME
+    )
 
     app.run_polling()

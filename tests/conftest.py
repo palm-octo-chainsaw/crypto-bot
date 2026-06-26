@@ -14,9 +14,34 @@ class FakeBot:
         self.sent.append(text)
 
 
+class FakeJob:
+    def __init__(self, name, callback):
+        self.name = name
+        self.callback = callback
+        self.removed = False
+
+    def schedule_removal(self):
+        self.removed = True
+
+
+class FakeJobQueue:
+    def __init__(self):
+        self.jobs = []
+
+    def get_jobs_by_name(self, name):
+        return tuple(j for j in self.jobs if j.name == name and not j.removed)
+
+    def run_repeating(self, callback, interval, first=0, name=None):
+        job = FakeJob(name, callback)
+        self.jobs.append(job)
+        return job
+
+
 class FakeContext:
     def __init__(self):
         self.bot = FakeBot()
+        self.job_queue = FakeJobQueue()
+        self.args = []
 
 
 @pytest.fixture
