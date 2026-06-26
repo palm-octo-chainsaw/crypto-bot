@@ -66,4 +66,19 @@ jobs:
           sudo -n k3s kubectl -n default set image deployment/crypto-bot \
             bot=a77878123/crypto-bot:"$VERSION"
           sudo -n k3s kubectl -n default rollout status deployment/crypto-bot --timeout=180s
-          sudo -n k3s kubectl -n default get pods -l app=crypto-bot -o wide
+
+      - name: Verify container status
+        env:
+          KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+        run: |
+          KC="sudo -n k3s kubectl -n default"
+          $KC get pods -l app=crypto-bot -o wide
+          phase=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.phase}')
+          ready=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
+          echo "container phase=$phase ready=$ready"
+          # The pipeline ends here: pass only if the container came up successfully.
+          if [ "$phase" != "Running" ] || [ "$ready" != "true" ]; then
+            echo "::error::crypto-bot did not reach a successful state (phase=$phase ready=$ready)"
+            exit 1
+          fi
+          echo "Deploy successful: crypto-bot is Running and ready."
