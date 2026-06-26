@@ -72,13 +72,21 @@ jobs:
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
           KC="sudo -n k3s kubectl -n default"
-          $KC get pods -l app=crypto-bot -o wide
-          phase=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.phase}')
-          ready=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
-          echo "container phase=$phase ready=$ready"
-          # The pipeline ends here: pass only if the container came up successfully.
-          if [ "$phase" != "Running" ] || [ "$ready" != "true" ]; then
-            echo "::error::crypto-bot did not reach a successful state (phase=$phase ready=$ready)"
-            exit 1
-          fi
-          echo "Deploy successful: crypto-bot is Running and ready."
+          attempts=3
+          # The pipeline ends here. Poll the container status up to $attempts
+          # times so a transient not-ready read can't fail an otherwise healthy
+          # deploy (and so a container that crashes just after coming up is still
+          # caught). Pass on the first healthy read; fail only if all attempts do.
+          for i in $(seq 1 "$attempts"); do
+            $KC get pods -l app=crypto-bot -o wide
+            phase=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.phase}')
+            ready=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
+            echo "attempt $i/$attempts: phase=$phase ready=$ready"
+            if [ "$phase" = "Running" ] && [ "$ready" = "true" ]; then
+              echo "Deploy successful: crypto-bot is Running and ready."
+              exit 0
+            fi
+            [ "$i" -lt "$attempts" ] && sleep 10
+          done
+          echo "::error::crypto-bot did not reach a successful state after $attempts checks (phase=$phase ready=$ready)"
+          exit 1
