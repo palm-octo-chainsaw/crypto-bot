@@ -83,6 +83,29 @@ def test_buy_uses_quote_order_qty_fraction_of_free_usdc():
     assert costs["ETH/USDC"] == pytest.approx(400.0, rel=1e-4)
 
 
+def test_buy_spends_only_intended_when_free_exceeds_plan():
+    """Single $600 buy with $10k free USDC must cost $600, not drain the whole balance."""
+    ex = FakeExchange(free={"USDC": 10_000.0}, markets={"BTC/USDC": {}})
+    portfolio = _portfolio({"BTC": 0.0, "USDC": 10_000.0})
+    prices = {"BTC": 50_000.0}
+    portfolio._execute_buys(ex, {"BTC": 0.012}, prices, dry_run=False)  # $600 intended
+
+    costs = {symbol: cost for kind, symbol, _, cost in ex.orders if kind == "cost"}
+    assert costs["BTC/USDC"] == pytest.approx(600.0, rel=1e-4)
+
+
+def test_buy_scales_down_proportionally_when_free_short():
+    """$600 + $400 intended but only $500 free → 50% scale: $300 BTC, $200 ETH."""
+    ex = FakeExchange(free={"USDC": 500.0}, markets={"BTC/USDC": {}, "ETH/USDC": {}})
+    portfolio = _portfolio({"BTC": 0.0, "ETH": 0.0, "USDC": 500.0})
+    prices = {"BTC": 50_000.0, "ETH": 2_500.0}
+    portfolio._execute_buys(ex, {"BTC": 0.012, "ETH": 0.16}, prices, dry_run=False)
+
+    costs = {symbol: cost for kind, symbol, _, cost in ex.orders if kind == "cost"}
+    assert costs["BTC/USDC"] == pytest.approx(300.0, rel=1e-4)
+    assert costs["ETH/USDC"] == pytest.approx(200.0, rel=1e-4)
+
+
 def test_buy_no_stable_balance_errors_out():
     ex = FakeExchange(free={"USDC": 0.0}, markets={"BTC/USDC": {}})
     portfolio = _portfolio({"BTC": 0.0, "USDC": 0.0})

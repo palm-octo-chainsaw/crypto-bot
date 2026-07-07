@@ -29,7 +29,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("puller", puller))
 
     app.job_queue.run_repeating(
-        poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=10, name=SIGNAL_POLL_JOB_NAME
+        poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=SIGNAL_POLL_INTERVAL_SECONDS, name=SIGNAL_POLL_JOB_NAME
     )
 
     app.run_polling()
