@@ -293,6 +293,11 @@ class Portfolio:
                                 "error": f"no {STABLE} to spend"})
             return results
 
+        # Spend each token's intended USD, scaling the whole plan down proportionally
+        # only when free stable can't cover it. Without the cap, a single buy leg would
+        # consume the entire free balance regardless of its target allocation.
+        scale = min(1.0, free_stable / total_intended_usd)
+
         for token, planned_amount in buys.items():
             pair_display = f"{STABLE}/{token}"
             if not _is_directly_tradeable(exchange, token, STABLE):
@@ -301,8 +306,7 @@ class Portfolio:
                 continue
 
             intended_usd = planned_amount * prices[token]
-            fraction = intended_usd / total_intended_usd
-            cost = free_stable * fraction
+            cost = intended_usd * scale
             symbol = f"{token}/{STABLE}"
             try:
                 results.append(place_market_buy_cost(exchange, symbol, cost, dry_run))
