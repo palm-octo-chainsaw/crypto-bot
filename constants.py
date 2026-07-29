@@ -13,6 +13,21 @@ DATABASE_URL = getenv("DATABASE_URL", "")
 META_MASK = getenv("META_MASK", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CRYPTO_PRICES_URL = "https://api.coingecko.com/api/v3/simple/price"
+# CoinGecko's free /simple/price endpoint only accepts CoinGecko coin ids
+# (the `symbols` query param is a paid-plan feature), so map tracked symbols here.
+COINGECKO_IDS = {
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "SUI": "sui",
+    "USDC": "usd-coin",
+    "DOGE": "dogecoin",
+    "XRP": "ripple",
+    "LINK": "chainlink",
+    "BNB": "binancecoin",
+    "PAXG": "pax-gold",
+    "HYPE": "hyperliquid",
+}
 MIN_TRADE_USD = float(getenv("MIN_TRADE_USD", "1.0"))
 REBALANCE_RESERVE_PCT = float(getenv("REBALANCE_RESERVE_PCT", "0.5"))
 TRW_EMAIL = getenv("TRW_EMAIL")
