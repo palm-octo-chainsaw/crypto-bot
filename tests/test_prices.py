@@ -21,7 +21,7 @@ class FakeResponse:
 
 
 def test_fetch_prices_returns_dict_on_success(monkeypatch):
-    payload = {"btc": {"usd": 100.0}, "eth": {"usd": 50.0}}
+    payload = {"bitcoin": {"usd": 100.0}, "ethereum": {"usd": 50.0}}
     monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: FakeResponse(payload))
 
     prices = fetch_prices(["BTC", "ETH"])
@@ -54,7 +54,7 @@ def test_fetch_prices_raises_on_network_error(monkeypatch):
 
 
 def test_fetch_prices_raises_when_symbol_missing(monkeypatch):
-    payload = {"btc": {"usd": 100.0}}  # ETH missing
+    payload = {"bitcoin": {"usd": 100.0}}  # ETH missing
     monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: FakeResponse(payload))
 
     with pytest.raises(PriceFetchError, match="ETH"):

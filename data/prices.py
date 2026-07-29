@@ -2,7 +2,7 @@ import logging
 import requests
 from requests import RequestException
 
-from constants import CRYPTO_PRICES_URL
+from constants import COINGECKO_IDS, CRYPTO_PRICES_URL
 
 
 logger = logging.getLogger(__name__)
@@ -17,10 +17,15 @@ class PriceRateLimitError(PriceFetchError):
 
 
 def fetch_prices(symbols: list) -> dict[str, float]:
+    unmapped = [s for s in symbols if s.upper() not in COINGECKO_IDS]
+    if unmapped:
+        raise PriceFetchError(f"no CoinGecko id mapping for: {', '.join(unmapped)}")
+
+    ids_to_symbol = {COINGECKO_IDS[s.upper()]: s.upper() for s in symbols}
     try:
         response = requests.get(
             CRYPTO_PRICES_URL,
-            params={"symbols": ", ".join(symbols), "vs_currencies": "usd"},
+            params={"ids": ",".join(ids_to_symbol), "vs_currencies": "usd"},
             timeout=15,
         )
         response.raise_for_status()
@@ -32,11 +37,11 @@ def fetch_prices(symbols: list) -> dict[str, float]:
         raise PriceFetchError(f"price API request failed: {error}") from error
 
     prices = {}
-    for symbol, values in response.json().items():
+    for coin_id, values in response.json().items():
         if "usd" not in values:
-            logger.warning("Price for %s not found", symbol)
+            logger.warning("Price for %s not found", coin_id)
             continue
-        prices[symbol.upper()] = values["usd"]
+        prices[ids_to_symbol[coin_id]] = values["usd"]
 
     missing = [s for s in symbols if s.upper() not in prices]
     if missing:
