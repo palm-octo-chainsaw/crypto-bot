@@ -53,6 +53,15 @@ def test_fetch_prices_raises_on_network_error(monkeypatch):
         fetch_prices(["BTC"])
 
 
+def test_fetch_prices_raises_on_unmapped_symbol(monkeypatch):
+    def unreachable(*a, **k):
+        raise AssertionError("should not hit the network for unmapped symbols")
+    monkeypatch.setattr("data.prices.requests.get", unreachable)
+
+    with pytest.raises(PriceFetchError, match="NOPE"):
+        fetch_prices(["BTC", "NOPE"])
+
+
 def test_fetch_prices_raises_when_symbol_missing(monkeypatch):
     payload = {"bitcoin": {"usd": 100.0}}  # ETH missing
     monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: FakeResponse(payload))
