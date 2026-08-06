@@ -91,6 +91,77 @@ async def test_poll_signal_skips_when_unchanged(monkeypatch, fake_context):
 
 
 @pytest.mark.asyncio
+async def test_poll_signal_skips_when_scrape_has_no_timestamp(monkeypatch, fake_context):
+    """Page-body fallback returns no timestamp → same allocations still count as unchanged."""
+    allocs = {"ETH": 83.3, "USDC": 16.7}
+
+    async def fake_scrape():
+        return allocs, None
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-08-05 00:12")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: dict(allocs))
+
+    def boom(*a, **kw):
+        raise AssertionError("should not be called when only the timestamp is missing")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.poll_signal(fake_context)
+
+    assert "unchanged" in ch._last_poll_status
+
+
+@pytest.mark.asyncio
+async def test_poll_signal_skips_when_stored_timestamp_is_unknown(monkeypatch, fake_context):
+    """Baseline has no timestamp (earlier fallback scrape) → matching allocations stay unchanged."""
+    allocs = {"ETH": 83.3, "USDC": 16.7}
+
+    async def fake_scrape():
+        return allocs, "2026-08-05 00:12"
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: None)
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: dict(allocs))
+
+    def boom(*a, **kw):
+        raise AssertionError("should not be called when only the baseline timestamp is missing")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.poll_signal(fake_context)
+
+    assert "unchanged" in ch._last_poll_status
+
+
+@pytest.mark.asyncio
+async def test_poll_signal_applies_when_timestamp_missing_but_allocations_changed(monkeypatch, fake_context):
+    """No timestamp but different allocations → still a new signal."""
+    new_allocs = {"BTC": 66.6, "ETH": 33.4}
+
+    async def fake_scrape():
+        return new_allocs, None
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-08-05 00:12")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"ETH": 83.3, "USDC": 16.7})
+
+    recorded = {}
+    monkeypatch.setattr(ch, "record_signal", lambda allocs, message_timestamp=None: recorded.update(allocs=allocs, ts=message_timestamp) or 1)
+    applied = {}
+    monkeypatch.setattr(ch, "_apply_allocations", lambda allocs: applied.update(allocs=allocs))
+
+    def fake_listener():
+        ch.portfolio.send_rebalance = False
+        return "within threshold"
+    monkeypatch.setattr(ch.portfolio, "listener", fake_listener)
+
+    await ch.poll_signal(fake_context)
+
+    assert recorded.get("allocs") == new_allocs
+    assert applied.get("allocs") == new_allocs
+
+
+@pytest.mark.asyncio
 async def test_poll_signal_skips_rebalance_when_within_drift(monkeypatch, fake_context):
     """New signal applied but portfolio already within 3% drift → no rebalance."""
     new_allocs = {"BTC": 51.0, "ETH": 33.0, "USDC": 16.0}
