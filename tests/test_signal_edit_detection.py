@@ -1,7 +1,15 @@
 """Tests for signal-edit detection: same timestamp + different allocations should re-apply."""
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from utils import command_handlers as ch
+
+
+def _make_update():
+    update = MagicMock()
+    update.message.reply_text = AsyncMock()
+    return update
 
 
 def test_allocations_match_identical():
@@ -159,6 +167,55 @@ async def test_poll_signal_applies_when_timestamp_missing_but_allocations_change
 
     assert recorded.get("allocs") == new_allocs
     assert applied.get("allocs") == new_allocs
+
+
+@pytest.mark.asyncio
+async def test_fetch_signal_reports_unchanged_on_same_timestamp(monkeypatch, fake_context):
+    """Manual /fetch_signal on an already-known signal reports it, without re-applying."""
+    allocs = {"ETH": 83.3, "USDC": 16.7}
+    timestamp = "2026-08-05 00:12"
+
+    async def fake_scrape():
+        return allocs, timestamp
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: timestamp)
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: dict(allocs))
+
+    def boom(*a, **kw):
+        raise AssertionError("should not re-apply an unchanged signal")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+
+    update = _make_update()
+    await ch.fetch_signal(update, fake_context)
+
+    sent = update.message.reply_text.call_args[0][0]
+    assert "unchanged" in sent
+    assert timestamp in sent
+
+
+@pytest.mark.asyncio
+async def test_fetch_signal_reports_unchanged_without_timestamp(monkeypatch, fake_context):
+    """Page-body fallback gives no timestamp → report unchanged by allocations instead."""
+    allocs = {"ETH": 83.3, "USDC": 16.7}
+
+    async def fake_scrape():
+        return allocs, None
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-08-05 00:12")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: dict(allocs))
+
+    def boom(*a, **kw):
+        raise AssertionError("should not re-apply when only the timestamp is missing")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+
+    update = _make_update()
+    await ch.fetch_signal(update, fake_context)
+
+    sent = update.message.reply_text.call_args[0][0]
+    assert "unchanged" in sent
+    assert "same allocations" in sent
 
 
 @pytest.mark.asyncio
