@@ -398,6 +398,23 @@ def _allocations_match(a: dict | None, b: dict | None, tol: float = 0.01) -> boo
     return all(abs(a.get(k, 0.0) - b.get(k, 0.0)) <= tol for k in keys)
 
 
+def _is_same_signal(allocations: dict, signal_time: str | None) -> bool:
+    """True when this scrape shows the signal we already recorded.
+
+    The scraper's page-body fallback cannot read a message timestamp, so a
+    flaky scrape returns ``signal_time=None``. Demanding a timestamp match
+    there would report the signal we already hold as new. With no timestamp to
+    compare we cannot tell the two apart, so fall back to the allocations —
+    re-applying identical allocations is a no-op rebalance either way.
+    """
+    if not _allocations_match(allocations, get_latest_allocations()):
+        return False
+    last_ts = get_latest_message_timestamp()
+    if signal_time and last_ts:
+        return signal_time == last_ts
+    return True
+
+
 def _apply_allocations(allocations: dict) -> None:
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
@@ -460,9 +477,9 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("⚠️ No allocations found in signal.")
         return
 
-    last_ts = get_latest_message_timestamp()
-    if signal_time and last_ts and signal_time == last_ts and _allocations_match(allocations, get_latest_allocations()):
-        await _reply(update, f"ℹ️ Signal unchanged — same timestamp ({signal_time}).", formatted=False)
+    if _is_same_signal(allocations, signal_time):
+        detail = f"same timestamp ({signal_time})" if signal_time else "same allocations"
+        await _reply(update, f"ℹ️ Signal unchanged — {detail}.", formatted=False)
         return
 
     record_signal(allocations, message_timestamp=signal_time)
@@ -601,9 +618,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "no allocations parsed"
         return
 
-    last_ts = get_latest_message_timestamp()
-    if signal_time and last_ts and signal_time == last_ts and _allocations_match(allocations, get_latest_allocations()):
-        logger.info("poll_signal: signal timestamp unchanged (%s)", signal_time)
+    if _is_same_signal(allocations, signal_time):
+        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
         _last_poll_status = f"unchanged (timestamp {signal_time})"
         return
 

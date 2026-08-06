@@ -10,6 +10,9 @@ k3s cluster, using the in-cluster PostgreSQL (`postgres:5432`) for persistence.
   via `envFrom`). **Never commit real values.**
 - `deployment.yaml` — the bot Deployment (`replicas: 1`, `strategy: Recreate`,
   no Service — the bot is outbound-only).
+- `restart-cronjob.yaml` — nightly `rollout restart` at 00:00 Europe/Sofia,
+  plus the ServiceAccount/Role/RoleBinding it needs. Recycles the long-lived
+  Playwright session daily.
 
 ## Why replicas: 1 + Recreate
 Only one process may poll the Telegram bot token at a time; two would cause
@@ -69,3 +72,17 @@ $K logs -l app=crypto-bot --tail=40
 ## Ongoing deploys
 A `v*.*.*` tag push builds the image and the CI `deploy` job runs
 `kubectl set image deployment/crypto-bot bot=…:<version>` + `rollout status`.
+
+CI only updates the image. Manifest changes under `k8s/` are applied by hand on
+the cluster host:
+
+```bash
+sudo -n k3s kubectl -n default apply -f k8s/restart-cronjob.yaml
+```
+
+## Nightly restart
+`crypto-bot-nightly-restart` fires `kubectl rollout restart deployment/crypto-bot`
+at 00:00 Europe/Sofia. The hour is deliberate: the RSPS signal posts ~00:12 UTC
+and the poller's first run is one full interval *after* boot (`run.py` passes
+`first=SIGNAL_POLL_INTERVAL_SECONDS`), so restarting near the signal would delay
+picking it up. Keep the schedule away from 00:00–00:30 UTC.

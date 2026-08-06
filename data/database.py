@@ -193,8 +193,17 @@ def get_earliest_snapshot() -> dict | None:
 
 
 def get_latest_message_timestamp() -> str | None:
+    """Return the newest signal's posted-at timestamp, ignoring unknown ones.
+
+    A scrape that falls back to the page body cannot read a message timestamp
+    and records the signal with NULL. Skipping those rows keeps one such scrape
+    from resetting the baseline and making the next poll look like a new signal.
+    """
     conn = get_connection()
-    cursor = conn.execute("SELECT message_timestamp FROM signals ORDER BY id DESC LIMIT 1")
+    cursor = conn.execute(
+        "SELECT message_timestamp FROM signals "
+        "WHERE message_timestamp IS NOT NULL ORDER BY id DESC LIMIT 1"
+    )
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
