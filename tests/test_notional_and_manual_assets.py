@@ -127,7 +127,9 @@ def test_manual_asset_line_tells_user_where_to_trade():
     line = pf._format_trade_line(
         {"symbol": "PAXG", "side": "buy", "usd_value": 1650.0, "manual": True}
     )
-    assert "MANUAL" in line and "PAXG" in line and "Kraken" in line
+    assert "MANUAL" in line
+    assert "PAXG" in line
+    assert "Kraken" in line
 
 
 def test_non_manual_assets_are_unaffected(monkeypatch):
@@ -165,5 +167,6 @@ def test_manual_only_plan_reports_instead_of_claiming_balanced(monkeypatch):
 
     message = portfolio.execute_rebalance(dry_run=False)
 
-    assert "MANUAL" in message and "PAXG" in message
+    assert "MANUAL" in message
+    assert "PAXG" in message
     assert "balanced" not in message
