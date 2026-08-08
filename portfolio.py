@@ -1,13 +1,16 @@
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
-from data.trading import create_binance, create_hyperliquid, find_direct_pair, place_order, place_market_buy_cost, apply_precision
+from data.trading import (
+    create_binance, create_hyperliquid, find_direct_pair, place_order,
+    place_market_buy_cost, apply_precision, effective_min_usd,
+)
 from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
 from constants import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     HYPERLIQUID_PRIVATE_KEY, HYPERLIQUID_ACCOUNT_ADDRESS, META_MASK,
-    MIN_TRADE_USD, REBALANCE_RESERVE_PCT,
+    MIN_TRADE_USD, REBALANCE_RESERVE_PCT, MANUAL_ASSETS,
 )
 
 
@@ -24,6 +27,8 @@ def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
 
 
 def _trade_status(trade: dict) -> str:
+    if trade.get("manual"):
+        return "manual"
     if trade.get("dust"):
         return "dust"
     if trade.get("skipped"):
@@ -43,8 +48,11 @@ def _format_trade_line(trade: dict) -> str:
     cost = trade.get("cost")
     qty = f"${cost:.2f} {STABLE}" if amount in (None, 0) and cost else f"`{amount}`"
 
+    if status == "manual":
+        return (f"✋ MANUAL {side} {symbol} (${trade['usd_value']:.2f}) — "
+                f"no bot venue trades {symbol}, execute on Kraken")
     if status == "dust":
-        return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${MIN_TRADE_USD} minimum"
+        return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${trade.get('min_usd', MIN_TRADE_USD):.2f} minimum"
     if status == "skipped":
         return f"⏭️ SKIP {symbol} — no exchange pair available"
     if status == "error":
@@ -141,8 +149,8 @@ class Portfolio:
         return self.summary.flush_summary()
 
     def _plan_trades(self, rebalance: dict, prices: dict) -> tuple[dict, dict, list]:
-        """Classify rebalance amounts into sells, buys, and dust trades."""
-        sells, buys, dust = {}, {}, []
+        """Classify rebalance amounts into sells, buys, and non-executed (dust/manual) trades."""
+        sells, buys, skipped = {}, {}, []
         for symbol, amount in rebalance.items():
             if symbol == STABLE or abs(amount) < 1e-6:
                 continue
@@ -155,12 +163,16 @@ class Portfolio:
 
             if usd_value < MIN_TRADE_USD:
                 logger.info("Trade for %s ($%.2f) below minimum $%.2f — skipping", symbol, usd_value, MIN_TRADE_USD)
-                dust.append({"symbol": symbol, "side": side, "amount": amount, "usd_value": usd_value, "dust": True})
+                skipped.append({"symbol": symbol, "side": side, "amount": amount, "usd_value": usd_value, "dust": True})
+            elif symbol in MANUAL_ASSETS:
+                logger.info("Trade for %s ($%.2f) is manual-only — no bot venue trades it", symbol, usd_value)
+                skipped.append({"symbol": symbol, "side": side, "amount": abs(amount),
+                                "usd_value": usd_value, "manual": True})
             elif amount < 0:
                 sells[symbol] = abs(amount)
             else:
                 buys[symbol] = amount
-        return sells, buys, dust
+        return sells, buys, skipped
 
     def _execute_cross_pairs(self, exchange, sells: dict, buys: dict, prices: dict, dry_run: bool) -> list:
         """Match sell/buy legs via direct cross-pairs (e.g. ETH/BTC) before routing through STABLE.
@@ -178,11 +190,13 @@ class Portfolio:
                 if not direct:
                     continue
 
+                symbol, side = direct
+                cross_min = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
                 matched_usd = min(
                     sells[sell_token] * prices[sell_token],
                     buys[buy_token] * prices[buy_token],
                 )
-                if matched_usd < MIN_TRADE_USD:
+                if matched_usd < cross_min:
                     continue
 
                 holdings = self.portfolio.get(sell_token, 0.0)
@@ -194,10 +208,9 @@ class Portfolio:
                 actual_sell = free_amount * fraction
                 if actual_sell <= 0:
                     continue
-                if actual_sell * prices[sell_token] < MIN_TRADE_USD:
+                if actual_sell * prices[sell_token] < cross_min:
                     continue  # not enough free balance to make this a non-dust cross-trade
 
-                symbol, side = direct
                 pair_display = f"{sell_token}->{buy_token} via {symbol}"
                 try:
                     if side == "sell":
@@ -223,9 +236,9 @@ class Portfolio:
                 sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
                 buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
                 free[sell_token] = free_amount - actual_sell
-                if buys[buy_token] * prices[buy_token] < MIN_TRADE_USD:
+                if buys[buy_token] * prices[buy_token] < cross_min:
                     buys.pop(buy_token, None)
-                if sells[sell_token] * prices[sell_token] < MIN_TRADE_USD:
+                if sells[sell_token] * prices[sell_token] < cross_min:
                     sells.pop(sell_token, None)
                     break  # this sell_token is done; move to the next
         return results
@@ -255,10 +268,11 @@ class Portfolio:
             fraction = min(planned_amount / holdings, 1.0)
             sellable = free_amount * fraction
             sellable_usd = sellable * prices.get(token, 0.0)
-            if sellable_usd < MIN_TRADE_USD:
-                logger.info("Sellable %s ($%.2f) below minimum $%.2f — dust", token, sellable_usd, MIN_TRADE_USD)
+            floor = effective_min_usd(exchange, f"{token}/{STABLE}", MIN_TRADE_USD)
+            if sellable_usd < floor:
+                logger.info("Sellable %s ($%.2f) below minimum $%.2f — dust", token, sellable_usd, floor)
                 results.append({"symbol": pair_display, "side": "sell", "amount": sellable,
-                                "usd_value": sellable_usd, "dust": True})
+                                "usd_value": sellable_usd, "min_usd": floor, "dust": True})
                 continue
             try:
                 sell_amount = apply_precision(exchange, f"{token}/{STABLE}", sellable)
@@ -308,6 +322,12 @@ class Portfolio:
             intended_usd = planned_amount * prices[token]
             cost = intended_usd * scale
             symbol = f"{token}/{STABLE}"
+            floor = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
+            if cost < floor:
+                logger.info("Buy for %s ($%.2f) below minimum $%.2f — dust", token, cost, floor)
+                results.append({"symbol": pair_display, "side": "buy", "amount": planned_amount,
+                                "usd_value": cost, "min_usd": floor, "dust": True})
+                continue
             try:
                 results.append(place_market_buy_cost(exchange, symbol, cost, dry_run))
             except Exception as err:
@@ -380,11 +400,14 @@ class Portfolio:
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
 
-        sells, buys, dust = self._plan_trades(rebalance, prices)
+        sells, buys, skipped = self._plan_trades(rebalance, prices)
         if not sells and not buys:
+            if skipped:
+                lines = ["🔄 *Rebalance — nothing executable*\n"] + [_format_trade_line(t) for t in skipped]
+                return "\n".join(lines)
             return "✅ Portfolio is balanced — no trades needed."
 
-        results = list(dust)
+        results = list(skipped)
 
         # Execute HYPE on Hyperliquid first
         if "HYPE" in sells:

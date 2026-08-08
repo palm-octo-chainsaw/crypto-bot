@@ -29,6 +29,15 @@ COINGECKO_IDS = {
     "HYPE": "hyperliquid",
 }
 MIN_TRADE_USD = float(getenv("MIN_TRADE_USD", "1.0"))
+# Assets tracked in the portfolio that none of the bot's execution venues can trade.
+# PAXG balances are read from Kraken (see data/balance.py) but Binance rejects PAXG
+# orders with -2010 "not permitted for this account", so its legs are reported for
+# manual execution instead of being sent to an exchange that will refuse them.
+MANUAL_ASSETS = {
+    asset.strip().upper()
+    for asset in getenv("MANUAL_ASSETS", "PAXG").split(",")
+    if asset.strip()
+}
 REBALANCE_RESERVE_PCT = float(getenv("REBALANCE_RESERVE_PCT", "0.5"))
 TRW_EMAIL = getenv("TRW_EMAIL")
 TRW_PASSWORD = getenv("TRW_PASSWORD")
