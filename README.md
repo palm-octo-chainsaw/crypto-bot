@@ -147,7 +147,18 @@ The bot computes the delta between each asset's current allocation and its targe
 
 Sells execute before buys to free up USDC. Trade routing prefers direct pairs and falls back to routing through USDC.
 
-Trades below the `MIN_TRADE_USD` threshold (default $1) are skipped as dust. Assets without an exchange pair are flagged and skipped.
+Trades below the minimum are skipped as dust. The minimum is the larger of `MIN_TRADE_USD`
+(default $1) and the exchange's own per-symbol NOTIONAL filter read from ccxt market metadata —
+Binance rejects undersized orders with `-1013`, and a flat local floor can't predict that
+(ETH/USDC sits near $5). Assets without an exchange pair are flagged and skipped.
+
+### Manual-only assets
+
+`MANUAL_ASSETS` (default `PAXG`) lists assets the portfolio tracks but no execution venue trades.
+PAXG balances are read from Kraken, yet Binance rejects PAXG orders with
+`-2010 "not permitted for this account"`, and the bot has no Kraken execution path — `krakenex` is
+read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade on Kraken by hand.
+The sells funding them still run, so the USDC is waiting on Binance to be moved across.
 
 ## Signal Polling
 

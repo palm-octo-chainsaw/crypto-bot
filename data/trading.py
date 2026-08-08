@@ -43,6 +43,26 @@ def apply_precision(exchange, symbol: str, amount: float) -> float:
     return float(exchange.amount_to_precision(symbol, amount))
 
 
+def min_notional(exchange, symbol: str) -> float:
+    """Exchange-enforced minimum order value in quote currency, 0.0 if unknown.
+
+    Binance rejects orders under its per-symbol NOTIONAL filter with -1013, which a
+    flat local floor can't predict — ETH/USDC sits near $5 while other pairs differ.
+    """
+    market = (exchange.markets or {}).get(symbol) or {}
+    cost_limits = (market.get("limits") or {}).get("cost") or {}
+    try:
+        return float(cost_limits.get("min") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def effective_min_usd(exchange, symbol: str, floor: float) -> float:
+    """The larger of our own minimum and the exchange's, so a leg can't pass locally
+    and then be rejected on submission."""
+    return max(floor, min_notional(exchange, symbol))
+
+
 def _fetch_hyperliquid_fee(user_address: str, oid: str) -> dict:
     """Fetch fee info for a Hyperliquid order from the fills API."""
     try:
