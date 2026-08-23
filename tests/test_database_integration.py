@@ -59,8 +59,8 @@ def test_snapshot_at_or_before_picks_nearest_older(db):
     db.record_snapshot(None, 9000.0, {}, {}, {}, {})
     db.record_snapshot(None, 10000.0, {}, {}, {}, {})
     conn = db.get_connection()
-    old = (now - timedelta(days=10)).isoformat()
-    new = (now - timedelta(days=1)).isoformat()
+    old = now - timedelta(days=10)
+    new = now - timedelta(days=1)
     conn.execute("UPDATE snapshots SET timestamp = %s WHERE total_value_usd = 9000.0", (old,))
     conn.execute("UPDATE snapshots SET timestamp = %s WHERE total_value_usd = 10000.0", (new,))
     conn.commit()
@@ -70,6 +70,54 @@ def test_snapshot_at_or_before_picks_nearest_older(db):
     snap = db.get_snapshot_at_or_before(now - timedelta(days=7))
     assert snap["total_value_usd"] == 9000.0
     assert db.get_earliest_snapshot()["total_value_usd"] == 9000.0
+
+
+def test_timestamps_are_stored_as_timestamptz(db):
+    """Range queries must compare real timestamps, not ISO strings byte by byte."""
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {})
+    conn = db.get_connection()
+    types = dict(conn.execute(
+        """SELECT table_name, data_type FROM information_schema.columns
+           WHERE column_name = 'timestamp'
+             AND table_name IN ('signals', 'snapshots', 'trades')
+             AND table_schema = current_schema()"""
+    ).fetchall())
+    conn.close()
+    assert types == {
+        "signals": "timestamp with time zone",
+        "snapshots": "timestamp with time zone",
+        "trades": "timestamp with time zone",
+    }
+    assert isinstance(db.get_latest_snapshot()["timestamp"], datetime)
+
+
+def test_record_snapshot_rejects_collapsed_total(db):
+    """A failed venue read reports ~$0; that must not become the next baseline."""
+    db.record_snapshot(None, 10000.0, {}, {}, {}, {})
+    db.record_snapshot(None, 2.64, {}, {}, {}, {})  # every exchange returned nothing
+    assert db.get_latest_snapshot()["total_value_usd"] == 10000.0
+
+
+def test_record_snapshot_allows_collapse_once_baseline_is_stale(db):
+    """A real collapse must not wedge snapshots forever behind an old high."""
+    db.record_snapshot(None, 10000.0, {}, {}, {}, {})
+    conn = db.get_connection()
+    conn.execute(
+        "UPDATE snapshots SET timestamp = %s",
+        (datetime.now(timezone.utc) - timedelta(days=5),),
+    )
+    conn.commit()
+    conn.close()
+
+    db.record_snapshot(None, 100.0, {}, {}, {}, {})
+    assert db.get_latest_snapshot()["total_value_usd"] == 100.0
+
+
+def test_record_snapshot_allows_large_gains(db):
+    """The gate is one-sided: deposits and rallies must still be recorded."""
+    db.record_snapshot(None, 1000.0, {}, {}, {}, {})
+    db.record_snapshot(None, 50000.0, {}, {}, {}, {})
+    assert db.get_latest_snapshot()["total_value_usd"] == 50000.0
 
 
 def test_record_trade_and_recent(db):

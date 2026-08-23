@@ -43,7 +43,10 @@ def migrate(sqlite_path: str) -> dict[str, int]:
     # Insert in FK order: signals first, then snapshots and trades.
     for table, cols in TABLES.items():
         rows = src.execute(f"SELECT {', '.join(cols)} FROM {table} ORDER BY id").fetchall()
-        placeholders = ", ".join(["%s"] * len(cols))
+        # SQLite stores timestamps as ISO text; the Postgres columns are TIMESTAMPTZ.
+        placeholders = ", ".join(
+            "%s::timestamptz" if c == "timestamp" else "%s" for c in cols
+        )
         for r in rows:
             dst.execute(
                 f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders}) "

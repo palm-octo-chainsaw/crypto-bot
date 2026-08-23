@@ -230,7 +230,7 @@ def _format_trades_section() -> list[str]:
         lines.append("none recorded")
         return lines
     for t in trades:
-        ts = t["timestamp"][:19].replace("T", " ")
+        ts = t["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
         marker = " (dry)" if t["dry_run"] else ""
         usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
         lines.append(f"{ts} {t['side']} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}")

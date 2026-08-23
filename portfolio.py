@@ -138,14 +138,22 @@ class Portfolio:
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
 
-        record_snapshot(
-            signal_id=get_latest_signal_id(),
-            total_value_usd=total_value,
-            balances=self.portfolio,
-            prices=prices,
-            values_usd=values,
-            targets=self.targets,
-        )
+        degraded = self.balance.degraded
+        if degraded:
+            # Failed venue reads look like empty wallets, so persisting this total
+            # would poison every /performance window that later lands on it.
+            venues = ", ".join(sorted(degraded))
+            logger.error("Skipping snapshot: balances degraded (%s)", venues)
+            self.summary.add_summary(f"\n⚠️ Snapshot skipped — balance fetch failed ({venues})")
+        else:
+            record_snapshot(
+                signal_id=get_latest_signal_id(),
+                total_value_usd=total_value,
+                balances=self.portfolio,
+                prices=prices,
+                values_usd=values,
+                targets=self.targets,
+            )
         return self.summary.flush_summary()
 
     def _plan_trades(self, rebalance: dict, prices: dict) -> tuple[dict, dict, list]:

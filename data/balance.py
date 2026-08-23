@@ -75,6 +75,21 @@ class Balance:
         self._binance_balances: dict | None = None
         self._w3: Web3 | None = None
         self._contracts: dict = {}
+        self._degraded: set[str] = set()
+
+    @property
+    def degraded(self) -> set[str]:
+        """Venues whose balances failed to load during the last spot-balance read.
+
+        Every fetcher below falls back to 0.0 so one dead venue cannot stop the
+        rest of the portfolio from being priced. That fallback is indistinguishable
+        from an empty wallet, so callers that persist totals must consult this
+        instead of trusting the numbers.
+        """
+        return set(self._degraded)
+
+    def _mark_degraded(self, venue: str) -> None:
+        self._degraded.add(venue)
 
     @property
     def w3(self) -> Web3:
@@ -82,6 +97,7 @@ class Balance:
             self._w3 = Web3(Web3.HTTPProvider(self.ARBITRUM_RPC))
             if not self._w3.is_connected():
                 logger.warning("Unable to connect to Arbitrum RPC at %s", self.ARBITRUM_RPC)
+                self._mark_degraded("arbitrum")
         return self._w3
 
     def _kraken_balance(self, symbol: str, kraken_raw: dict) -> float:
@@ -91,6 +107,11 @@ class Balance:
         return float(kraken_raw.get(kraken_key, 0.0))
 
     def get_spot_balance(self) -> dict:
+        # Only clear the venues re-read below. Binance balances are cached until an
+        # explicit refresh, so a failed fetch stays flagged until the next refresh
+        # replaces it — clearing it here would drop the failure that just happened,
+        # since update_portfolio() refreshes Binance before calling this.
+        self._degraded -= {"arbitrum", "kraken", "hyperliquid"}
         kraken_raw = self.get_raw_kraken_balance()
         hl = self.get_hyperliquid_balances()
 
@@ -132,6 +153,7 @@ class Balance:
                 token_contract,
                 exc_info=True,
             )
+            self._mark_degraded("arbitrum")
             return 0.0
 
     def get_usdc_balance(self) -> float:
@@ -143,6 +165,7 @@ class Balance:
             return float(self.w3.from_wei(balance_wei, 'ether')) + self.get_binance_balance("ETH")
         except Exception:
             logger.error("Error fetching ETH balance", exc_info=True)
+            self._mark_degraded("arbitrum")
             return 0.0
 
     def _load_binance_balances(self) -> None:
@@ -154,8 +177,10 @@ class Balance:
                 entry["asset"]: float(entry["free"]) + float(entry["locked"])
                 for entry in account_info.get("balances", [])
             }
+            self._degraded.discard("binance")
         except Exception as err:
             logger.error("Binance account fetch error: %s", err)
+            self._mark_degraded("binance")
             self._binance_balances = {}
 
     def refresh_binance_balances(self) -> None:
@@ -182,6 +207,7 @@ class Balance:
             return response.json().get("balances", [])
         except Exception:
             logger.exception("Error fetching balances from Hyperliquid")
+            self._mark_degraded("hyperliquid")
             return []
 
     def get_hyperliquid_balances(self) -> dict:
@@ -202,8 +228,10 @@ class Balance:
             result = self.kraken_client.query_private("Balance")
             if result.get("error"):
                 logger.error("Kraken API error: %s", result['error'])
+                self._mark_degraded("kraken")
                 return {}
             return result["result"]
         except Exception as err:
             logger.error("Kraken balance fetch error: %s", err)
+            self._mark_degraded("kraken")
             return {}

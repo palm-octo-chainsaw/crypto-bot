@@ -12,6 +12,7 @@ def _balance() -> Balance:
     b._binance_balances = None
     b._w3 = None
     b._contracts = {}
+    b._degraded = set()
     return b
 
 
@@ -63,4 +64,6 @@ def test_get_hyperliquid_free_balance_returns_zero_for_missing_coin(monkeypatch)
 def test_fetch_hyperliquid_swallows_request_errors(monkeypatch):
     monkeypatch.setattr(balance_mod, "META_MASK", "0xmaster")
     with patch.object(balance_mod.requests, "post", side_effect=RuntimeError("boom")):
-        assert _balance()._fetch_hyperliquid_spot_balances() == []
+        b = _balance()
+        assert b._fetch_hyperliquid_spot_balances() == []
+        assert b.degraded == {"hyperliquid"}
