@@ -91,6 +91,26 @@ def test_timestamps_are_stored_as_timestamptz(db):
     assert isinstance(db.get_latest_snapshot()["timestamp"], datetime)
 
 
+def test_init_db_converts_legacy_text_timestamps(db):
+    """The prod schema came from SQLite with TEXT timestamps; init_db must promote it."""
+    conn = db.get_connection()
+    conn.execute("ALTER TABLE snapshots ALTER COLUMN timestamp TYPE TEXT")
+    conn.execute(
+        "INSERT INTO snapshots (timestamp, total_value_usd, balances, prices, values_usd, targets) "
+        "VALUES ('2026-08-16T00:32:19.160505+00:00', 9000.0, '{}', '{}', '{}', '{}')"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    snap = db.get_latest_snapshot()
+    assert snap["timestamp"] == datetime(2026, 8, 16, 0, 32, 19, 160505, tzinfo=timezone.utc)
+    # The converted rows must be reachable by a real range query, not a string compare.
+    cutoff = datetime(2026, 8, 16, 0, 44, tzinfo=timezone.utc)
+    assert db.get_snapshot_at_or_before(cutoff)["total_value_usd"] == 9000.0
+
+
 def test_record_snapshot_rejects_collapsed_total(db):
     """A failed venue read reports ~$0; that must not become the next baseline."""
     db.record_snapshot(None, 10000.0, {}, {}, {}, {})
