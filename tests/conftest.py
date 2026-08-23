@@ -49,6 +49,21 @@ def fake_context():
     return FakeContext()
 
 
+@pytest.fixture
+def bare_balance():
+    """A Balance with no live clients — mirrors __init__ without the network setup."""
+    from data.balance import Balance
+
+    b = Balance.__new__(Balance)
+    b.binance_client = None
+    b.kraken_client = None
+    b._binance_balances = None
+    b._w3 = None
+    b._contracts = {}
+    b._degraded = set()
+    return b
+
+
 @pytest.fixture(autouse=True)
 def reset_command_handler_state(monkeypatch):
     """Reset module-level state in utils.command_handlers before each test."""

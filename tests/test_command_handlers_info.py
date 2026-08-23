@@ -107,14 +107,15 @@ def test_trades_section_empty(monkeypatch):
 
 def test_trades_section_renders_rows(monkeypatch):
     rows = [
-        {"timestamp": "2026-04-30T11:00:00+00:00", "symbol": "BTC/USDC", "side": "buy",
-         "amount": 0.012345, "usd_value": 600.0, "status": "closed", "dry_run": False},
-        {"timestamp": "2026-04-30T11:05:00+00:00", "symbol": "ETH/USDC", "side": "sell",
-         "amount": 0.5, "usd_value": None, "status": "ok", "dry_run": True},
+        {"timestamp": datetime(2026, 4, 30, 11, 0, tzinfo=timezone.utc), "symbol": "BTC/USDC",
+         "side": "buy", "amount": 0.012345, "usd_value": 600.0, "status": "closed",
+         "dry_run": False},
+        {"timestamp": datetime(2026, 4, 30, 11, 5, tzinfo=timezone.utc), "symbol": "ETH/USDC",
+         "side": "sell", "amount": 0.5, "usd_value": None, "status": "ok", "dry_run": True},
     ]
     monkeypatch.setattr(ch, "get_recent_trades", lambda limit=5: rows)
     out = "\n".join(ch._format_trades_section())
-    assert "buy BTC/USDC" in out
+    assert "2026-04-30 11:00:00 buy BTC/USDC" in out
     assert "$600.00" in out
     assert "(dry)" in out
     assert "—" in out  # null usd_value placeholder

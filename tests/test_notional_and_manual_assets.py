@@ -1,4 +1,6 @@
 """Exchange minimum notionals and manual-only assets."""
+from types import SimpleNamespace
+
 import pytest
 
 import portfolio as pf
@@ -38,6 +40,7 @@ def _market(min_cost: float | None) -> dict:
 def _portfolio(holdings: dict) -> pf.Portfolio:
     p = pf.Portfolio.__new__(pf.Portfolio)
     p.portfolio = holdings
+    p.balance = SimpleNamespace(degraded=set())  # every venue answered
     return p
 
 

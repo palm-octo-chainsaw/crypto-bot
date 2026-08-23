@@ -138,6 +138,14 @@ class Portfolio:
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
 
+        degraded = self.balance.degraded
+        if degraded:
+            venues = ", ".join(sorted(degraded))
+            logger.error("Balances degraded (%s) — recording snapshot as partial", venues)
+            self.summary.add_summary(f"\n⚠️ Partial snapshot — balance fetch failed ({venues})")
+
+        # Recorded either way: a partial row keeps the audit trail without ever
+        # being read back as a baseline (see data.database._clean_snapshot).
         record_snapshot(
             signal_id=get_latest_signal_id(),
             total_value_usd=total_value,
@@ -145,6 +153,7 @@ class Portfolio:
             prices=prices,
             values_usd=values,
             targets=self.targets,
+            partial=bool(degraded),
         )
         return self.summary.flush_summary()
 
@@ -397,6 +406,14 @@ class Portfolio:
             return "⚠️ Binance API credentials not set — cannot execute trades."
 
         self.update_portfolio()
+        if self.balance.degraded:
+            # A venue that failed to answer reports 0.0, so its holdings look sold
+            # already. Rebalancing on that sells the rest of the book down to match
+            # a portfolio that does not exist.
+            venues = ", ".join(sorted(self.balance.degraded))
+            logger.error("Refusing to rebalance: balances degraded (%s)", venues)
+            return f"⚠️ Balance fetch failed ({venues}) — refusing to trade on incomplete holdings."
+
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
 

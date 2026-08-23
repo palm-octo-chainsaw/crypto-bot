@@ -115,6 +115,27 @@ docker run --env-file .env crypto-telegram-bot
 | `/rebalance live` | Execute real market orders on Binance |
 | `/fetch_signal` | Fetch latest RSPS signal and update targets |
 | `/status` | Show scheduled poller status |
+| `/performance [24h\|7d\|30d\|all]` | Portfolio value change over a window |
+
+## Degraded balance reads
+
+Every venue fetcher in `data/balance.py` falls back to `0.0` when its API call fails, so one dead
+venue cannot stop the rest of the portfolio from being priced. That fallback is indistinguishable
+from an empty wallet, so `Balance.degraded` records which venues could not be read, and two things
+follow from it:
+
+- **Snapshots** are still written, but marked `partial`. Partial rows are kept for the audit trail
+  and excluded from every `/performance` baseline — an outage leaves a gap in the history rather
+  than a false percentage. (A Binance + Kraken outage once persisted a $2.64 total, which later
+  became a 7d baseline and reported +442,768%.)
+- **Rebalancing is refused outright.** A venue reporting `0.0` looks like its holdings were already
+  sold, and trading on that sells the rest of the book down to match a portfolio that doesn't exist.
+
+Absent credentials count as degraded: the bot holds assets on all four venues, so a missing client
+means an incomplete read rather than an empty wallet. As a backstop for failures that report a
+plausible-looking total, `SNAPSHOT_GATE_MIN_RATIO` marks any snapshot below that fraction of the
+last clean one as partial; the gate disarms once that baseline is older than
+`SNAPSHOT_GATE_MAX_AGE_HOURS`, so a genuine collapse cannot wedge writes forever.
 
 ## Architecture
 
@@ -124,7 +145,7 @@ run.py                          # Entry point, registers Telegram handlers
 ├── data/
 │   ├── balance.py              # Multi-source balance aggregation
 │   ├── trading.py              # ccxt trade routing (Binance + Hyperliquid)
-│   ├── database.py             # SQLite signal/trade/snapshot storage
+│   ├── database.py             # PostgreSQL signal/trade/snapshot storage
 │   ├── prices.py               # CoinGecko price fetching
 │   └── scraper.py              # Signal scraper (Playwright + TOTP)
 ├── utils/

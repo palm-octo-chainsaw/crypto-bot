@@ -223,17 +223,20 @@ def _format_trades_section() -> list[str]:
     lines = ["📜 *Recent Trades*"]
     try:
         trades = get_recent_trades(limit=5)
+        if not trades:
+            lines.append("none recorded")
+            return lines
+        for t in trades:
+            ts = t["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
+            marker = " (dry)" if t["dry_run"] else ""
+            usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
+            lines.append(
+                f"{ts} {t['side']} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}"
+            )
     except Exception as err:
+        # Rendering is inside the try so a schema that failed to migrate degrades
+        # this section instead of taking the whole /info command down.
         lines.append(f"⚠️ unavailable ({err})")
-        return lines
-    if not trades:
-        lines.append("none recorded")
-        return lines
-    for t in trades:
-        ts = t["timestamp"][:19].replace("T", " ")
-        marker = " (dry)" if t["dry_run"] else ""
-        usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
-        lines.append(f"{ts} {t['side']} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}")
     return lines
 
 
@@ -266,7 +269,9 @@ def _format_performance_line(label: str, delta: timedelta | None, end_value: flo
         snap = get_earliest_snapshot()
     else:
         snap = get_snapshot_at_or_before(now - delta)
-    if snap is None or snap["total_value_usd"] <= 0:
+    # `not > 0` rather than `<= 0` so a NaN baseline is rejected too — it would
+    # otherwise slip through every comparison and render as "-$nan (-nan%)".
+    if snap is None or not snap["total_value_usd"] > 0:
         return f"{label}: insufficient history"
     start_value = snap["total_value_usd"]
     pnl = end_value - start_value

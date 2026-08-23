@@ -59,8 +59,8 @@ def test_snapshot_at_or_before_picks_nearest_older(db):
     db.record_snapshot(None, 9000.0, {}, {}, {}, {})
     db.record_snapshot(None, 10000.0, {}, {}, {}, {})
     conn = db.get_connection()
-    old = (now - timedelta(days=10)).isoformat()
-    new = (now - timedelta(days=1)).isoformat()
+    old = now - timedelta(days=10)
+    new = now - timedelta(days=1)
     conn.execute("UPDATE snapshots SET timestamp = %s WHERE total_value_usd = 9000.0", (old,))
     conn.execute("UPDATE snapshots SET timestamp = %s WHERE total_value_usd = 10000.0", (new,))
     conn.commit()
@@ -70,6 +70,119 @@ def test_snapshot_at_or_before_picks_nearest_older(db):
     snap = db.get_snapshot_at_or_before(now - timedelta(days=7))
     assert snap["total_value_usd"] == 9000.0
     assert db.get_earliest_snapshot()["total_value_usd"] == 9000.0
+
+
+def test_timestamps_are_stored_as_timestamptz(db):
+    """Range queries must compare real timestamps, not ISO strings byte by byte."""
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {})
+    conn = db.get_connection()
+    types = dict(conn.execute(
+        """SELECT table_name, data_type FROM information_schema.columns
+           WHERE column_name = 'timestamp'
+             AND table_name IN ('signals', 'snapshots', 'trades')
+             AND table_schema = current_schema()"""
+    ).fetchall())
+    conn.close()
+    assert types == {
+        "signals": "timestamp with time zone",
+        "snapshots": "timestamp with time zone",
+        "trades": "timestamp with time zone",
+    }
+    assert isinstance(db.get_latest_snapshot()["timestamp"], datetime)
+
+
+def test_init_db_converts_legacy_text_timestamps(db):
+    """The prod schema came from SQLite with TEXT timestamps; init_db must promote it."""
+    conn = db.get_connection()
+    conn.execute("ALTER TABLE snapshots ALTER COLUMN timestamp TYPE TEXT")
+    conn.execute(
+        "INSERT INTO snapshots (timestamp, total_value_usd, balances, prices, values_usd, targets) "
+        "VALUES ('2026-08-16T00:32:19.160505+00:00', 9000.0, '{}', '{}', '{}', '{}')"
+    )
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+
+    snap = db.get_latest_snapshot()
+    assert snap["timestamp"] == datetime(2026, 8, 16, 0, 32, 19, 160505, tzinfo=timezone.utc)
+    # The converted rows must be reachable by a real range query, not a string compare.
+    cutoff = datetime(2026, 8, 16, 0, 44, tzinfo=timezone.utc)
+    assert db.get_snapshot_at_or_before(cutoff)["total_value_usd"] == 9000.0
+
+
+def test_init_db_converts_naive_timestamps(db):
+    """A naive column raises when compared with the aware datetimes this module writes."""
+    conn = db.get_connection()
+    conn.execute("ALTER TABLE snapshots ALTER COLUMN timestamp TYPE TIMESTAMP WITHOUT TIME ZONE")
+    conn.commit()
+    conn.close()
+
+    db.init_db()
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {})
+
+    assert db.get_latest_snapshot()["timestamp"].tzinfo is not None
+
+
+def test_record_snapshot_stores_collapsed_total_as_partial(db):
+    """A failed venue read reports ~$0; keep the row, but never use it as a baseline."""
+    db.record_snapshot(None, 10000.0, {}, {}, {}, {})
+    db.record_snapshot(None, 2.64, {}, {}, {}, {})  # every exchange returned nothing
+
+    assert db.get_latest_snapshot()["total_value_usd"] == 10000.0
+    conn = db.get_connection()
+    rows = conn.execute(
+        "SELECT total_value_usd, partial FROM snapshots ORDER BY total_value_usd"
+    ).fetchall()
+    conn.close()
+    assert rows == [(2.64, True), (10000.0, False)]
+
+
+def test_a_partial_row_cannot_disarm_the_gate(db):
+    """Benchmarking against the last row — partial included — admitted every later one."""
+    db.record_snapshot(None, 10000.0, {}, {}, {}, {})
+    for _ in range(3):
+        db.record_snapshot(None, 2.64, {}, {}, {}, {})
+
+    assert db.get_latest_snapshot()["total_value_usd"] == 10000.0
+    conn = db.get_connection()
+    clean = conn.execute("SELECT count(*) FROM snapshots WHERE NOT partial").fetchone()[0]
+    conn.close()
+    assert clean == 1
+
+
+def test_partial_snapshots_are_excluded_from_every_baseline(db):
+    """Explicitly partial rows are audit trail only."""
+    db.record_snapshot(None, 5.0, {}, {}, {}, {}, partial=True)
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {})
+
+    assert db.get_earliest_snapshot()["total_value_usd"] == 9000.0
+    assert db.get_latest_snapshot()["total_value_usd"] == 9000.0
+    assert db.get_snapshot_at_or_before(
+        datetime.now(timezone.utc) + timedelta(minutes=1)
+    )["total_value_usd"] == 9000.0
+
+
+def test_record_snapshot_allows_collapse_once_baseline_is_stale(db):
+    """A real collapse must not wedge snapshots forever behind an old high."""
+    db.record_snapshot(None, 10000.0, {}, {}, {}, {})
+    conn = db.get_connection()
+    conn.execute(
+        "UPDATE snapshots SET timestamp = %s",
+        (datetime.now(timezone.utc) - timedelta(days=5),),
+    )
+    conn.commit()
+    conn.close()
+
+    db.record_snapshot(None, 100.0, {}, {}, {}, {})
+    assert db.get_latest_snapshot()["total_value_usd"] == 100.0
+
+
+def test_record_snapshot_allows_large_gains(db):
+    """The gate is one-sided: deposits and rallies must still be recorded."""
+    db.record_snapshot(None, 1000.0, {}, {}, {}, {})
+    db.record_snapshot(None, 50000.0, {}, {}, {}, {})
+    assert db.get_latest_snapshot()["total_value_usd"] == 50000.0
 
 
 def test_record_trade_and_recent(db):
