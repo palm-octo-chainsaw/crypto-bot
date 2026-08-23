@@ -39,13 +39,13 @@ MANUAL_ASSETS = {
     if asset.strip()
 }
 REBALANCE_RESERVE_PCT = float(getenv("REBALANCE_RESERVE_PCT", "0.5"))
-# A snapshot worth less than this fraction of the previous one is treated as a
-# failed read rather than a real drawdown. Venue fetchers that error out report
-# zero balances, which used to land in the history as near-$0 rows and turned
-# /performance baselines into six-digit percentages.
-SNAPSHOT_COLLAPSE_RATIO = float(getenv("SNAPSHOT_COLLAPSE_RATIO", "0.2"))
+# Backstop for the degraded-venue check in Balance.degraded: a snapshot worth
+# less than this fraction of the last clean one is treated as a failed read
+# rather than a real drawdown. Must be between 0 and 1 — a ratio of 1 or more
+# would reject every write, including gains.
+SNAPSHOT_GATE_MIN_RATIO = min(max(float(getenv("SNAPSHOT_GATE_MIN_RATIO", "0.2")), 0.0), 0.99)
 # Only apply that gate against a recent baseline, so a genuine collapse cannot
-# lock snapshots out forever: once the last good row ages past this, writes resume.
+# lock snapshots out forever: once the last clean row ages past this, writes resume.
 SNAPSHOT_GATE_MAX_AGE_HOURS = float(getenv("SNAPSHOT_GATE_MAX_AGE_HOURS", "48"))
 TRW_EMAIL = getenv("TRW_EMAIL")
 TRW_PASSWORD = getenv("TRW_PASSWORD")
