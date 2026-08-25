@@ -1,0 +1,42 @@
+# Keeps a build cache on the default branch so release builds can reuse it.
+#
+# GitHub's Actions cache is scoped per git ref: a run writes to its own ref's
+# scope and reads its own ref plus the default branch. Only tag pushes build the
+# image, so every release was an island — v1.9.3 imported the cache manifest,
+# missed on `RUN pip install ... playwright install`, rebuilt the 557 MB layer
+# under a fresh digest, and the node pulled the whole 600 MB image again (4m15s,
+# blowing the deploy job's rollout timeout).
+#
+# This job writes that cache from master, where tag builds can read it. It
+# builds nothing anyone consumes: `outputs: type=cacheonly` discards the image,
+# so there is no push, no registry, and no credentials involved.
+name: Warm build cache
+
+on:
+  push:
+    branches: [master]
+    # The heavy layer depends on these two files alone; anything else changing
+    # would rebuild only the cheap COPY above it.
+    paths:
+      - Dockerfile
+      - requirements.txt
+  # python:3.14-slim moves under us, and an entry unread for 7 days is evicted.
+  # A weekly rebuild covers both without waiting for a release to go cold.
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
