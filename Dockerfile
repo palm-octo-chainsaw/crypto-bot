@@ -2,9 +2,13 @@ FROM python:3.14-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
+# requirements.lock, not requirements.txt: the direct pins in requirements.txt
+# leave every transitive dependency free to resolve to whatever is newest at
+# build time, so two images built from the same commit could ship different
+# libraries. The lock names all of them.
+COPY requirements.lock .
 
-RUN pip install --no-cache-dir -r requirements.txt && \
+RUN pip install --no-cache-dir -r requirements.lock && \
     playwright install --with-deps chromium
 
 COPY . .

@@ -19,7 +19,7 @@ on:
     # would rebuild only the cheap COPY above it.
     paths:
       - Dockerfile
-      - requirements.txt
+      - requirements.lock
   # python:3.14-slim moves under us, and an entry unread for 7 days is evicted.
   # A weekly rebuild covers both without waiting for a release to go cold.
   schedule:
