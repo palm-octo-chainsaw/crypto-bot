@@ -66,7 +66,7 @@ spec:
               command:
                 - sh
                 - -c
-                - test $(( $(date +%s) - $(cat /tmp/heartbeat) )) -lt 300
+                - test $(( $(date +%s) - $(cat /app/logs/heartbeat) )) -lt 300
             initialDelaySeconds: 120
             periodSeconds: 60
             timeoutSeconds: 5

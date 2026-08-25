@@ -4,7 +4,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update, BotCommand
-from telegram.error import BadRequest, NetworkError
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ContextTypes, ExtBot, Application
 
 from utils.helpers import format_message, write_json
@@ -27,7 +27,10 @@ GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
 SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 SIGNAL_POLL_JOB_NAME = "signal_poll"
 
-HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat")
+# Lives beside the logs (a volume the container owns) rather than in /tmp, which
+# is world-writable: anything else in the image could keep the stamp fresh and
+# hide a dead loop from the probe.
+HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", "logs/heartbeat")
 HEARTBEAT_INTERVAL_SECONDS = 60
 HEARTBEAT_JOB_NAME = "heartbeat"
 
@@ -60,14 +63,19 @@ async def _send_with_retry(send, *args, **kwargs):
             raise
         except NetworkError as err:
             if attempt == SEND_ATTEMPTS:
-                logger.error("Telegram send failed after %d attempts: %s", attempt, err)
+                logger.exception("Telegram send failed after %d attempts", attempt)
                 raise
-            delay = SEND_RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1)
+            delay = SEND_RETRY_BASE_DELAY_SECONDS * attempt
             logger.warning(
                 "Telegram send failed (attempt %d/%d): %s — retrying in %.0fs",
                 attempt, SEND_ATTEMPTS, err, delay,
             )
             await asyncio.sleep(delay)
+
+
+def _write_heartbeat() -> None:
+    with open(HEARTBEAT_FILE, "w") as file:
+        file.write(str(int(datetime.now(timezone.utc).timestamp())))
 
 
 async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,19 +86,28 @@ async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
     reads this file's age and restarts the pod once it goes stale.
     """
     try:
-        with open(HEARTBEAT_FILE, "w") as file:
-            file.write(str(int(datetime.now(timezone.utc).timestamp())))
+        await asyncio.to_thread(_write_heartbeat)
     except OSError as err:
         logger.warning("Could not write heartbeat file %s: %s", HEARTBEAT_FILE, err)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log whatever a handler raised, with the traceback.
+    """Log whatever a handler raised, then say so in the chat.
 
     Without a registered handler PTB only logs "No error handlers are
-    registered", which is how a night of failed replies looked like nothing.
+    registered" and the sender is left staring at an unanswered command.
     """
     logger.error("Unhandled exception while processing update: %s", context.error, exc_info=context.error)
+
+    message = getattr(update, "effective_message", None)
+    if message is None or isinstance(context.error, NetworkError):
+        # A network error has already been through _send_with_retry — the notice
+        # would fail exactly the same way.
+        return
+    try:
+        await _send_with_retry(message.reply_text, GENERIC_ERROR_REPLY)
+    except TelegramError as err:
+        logger.warning("Could not deliver the error notice: %s", err)
 
 
 async def set_bot_commands(bot: ExtBot) -> None:

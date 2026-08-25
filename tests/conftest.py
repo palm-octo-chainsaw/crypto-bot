@@ -9,9 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 class FakeBot:
     def __init__(self):
         self.sent = []
+        self.commands = []
 
     async def send_message(self, chat_id, text, parse_mode=None):
         self.sent.append(text)
+
+    async def set_my_commands(self, commands):
+        self.commands = commands
 
 
 class FakeJob:
@@ -44,9 +48,36 @@ class FakeContext:
         self.args = []
 
 
+class FakeMessage:
+    def __init__(self):
+        self.replies = []
+        self.failure = None
+
+    async def reply_text(self, text, **kwargs):
+        if self.failure is not None:
+            raise self.failure
+        self.replies.append(text)
+
+
+class FakeUpdate:
+    def __init__(self):
+        self.message = FakeMessage()
+        self.effective_message = self.message
+
+
 @pytest.fixture
 def fake_context():
     return FakeContext()
+
+
+@pytest.fixture
+def fake_message():
+    return FakeMessage()
+
+
+@pytest.fixture
+def fake_update():
+    return FakeUpdate()
 
 
 @pytest.fixture

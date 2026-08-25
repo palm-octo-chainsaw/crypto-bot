@@ -1,8 +1,8 @@
-"""Tests for Telegram send retries and the liveness heartbeat."""
+"""Tests for Telegram send retries, the liveness heartbeat, and the error handler."""
 import time
 
 import pytest
-from telegram.error import BadRequest, NetworkError
+from telegram.error import BadRequest, NetworkError, TimedOut
 
 from utils import command_handlers as ch
 
@@ -71,3 +71,37 @@ async def test_heartbeat_survives_unwritable_path(tmp_path, monkeypatch, fake_co
     monkeypatch.setattr(ch, "HEARTBEAT_FILE", str(tmp_path / "missing-dir" / "heartbeat"))
 
     await ch.heartbeat(fake_context)  # must not raise into the job queue
+
+
+@pytest.mark.asyncio
+async def test_error_handler_tells_the_chat(fake_context, fake_update):
+    fake_context.error = ValueError("boom")
+
+    await ch.error_handler(fake_update, fake_context)
+
+    assert fake_update.message.replies == [ch.GENERIC_ERROR_REPLY]
+
+
+@pytest.mark.asyncio
+async def test_error_handler_stays_quiet_on_network_errors(fake_context, fake_update):
+    """The reply would travel the same broken path the failed call just did."""
+    fake_context.error = TimedOut()
+
+    await ch.error_handler(fake_update, fake_context)
+
+    assert fake_update.message.replies == []
+
+
+@pytest.mark.asyncio
+async def test_error_handler_handles_update_without_message(fake_context):
+    fake_context.error = ValueError("boom")
+
+    await ch.error_handler(object(), fake_context)  # nothing to reply to
+
+
+@pytest.mark.asyncio
+async def test_error_handler_swallows_a_failed_notice(fake_context, fake_update):
+    fake_update.message.failure = BadRequest("chat not found")
+    fake_context.error = ValueError("boom")
+
+    await ch.error_handler(fake_update, fake_context)
