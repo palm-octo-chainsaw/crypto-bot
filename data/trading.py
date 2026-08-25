@@ -85,13 +85,31 @@ def _fetch_hyperliquid_fee(user_address: str, oid: str) -> dict:
     return {}
 
 
+def _restore_order_identity(order: dict, symbol: str, side: str) -> dict:
+    """Fill in what the venue left out of its order response.
+
+    Hyperliquid answers a market order with the fill alone — `totalSz`, `avgPx`,
+    `oid` — and no coin or side, so ccxt parses `symbol` and `side` as None. That
+    reached Telegram as "✅ `23.33` None" and, worse, `_persist_trades` wrote the
+    row with an empty symbol and no price, leaving every HYPE fill unattributable
+    in the trade history. We asked for this order, so the request is the
+    authority on what it was; only fields the venue actually returned win.
+    """
+    order["symbol"] = order.get("symbol") or symbol
+    order["side"] = order.get("side") or side
+    return order
+
+
 def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool,
                 price: float | None = None) -> dict:
     if dry_run:
         logger.info("[DRY RUN] %s %s on %s", side.upper(), amount, symbol)
         return {"symbol": symbol, "side": side, "amount": amount, "dry_run": True}
     logger.info("Executing: %s %s on %s", side.upper(), amount, symbol)
-    order = exchange.create_market_order(symbol, side, amount, price=price)
+    order = _restore_order_identity(
+        exchange.create_market_order(symbol, side, amount, price=price), symbol, side
+    )
+    order["amount"] = order.get("amount") or amount
     fee = order.get("fee") or {}
     # Hyperliquid doesn't return fees in the order response — fetch from fills
     if not fee and hasattr(exchange, 'walletAddress'):
@@ -112,7 +130,9 @@ def place_market_buy_cost(exchange, symbol: str, cost: float, dry_run: bool) -> 
         logger.info("[DRY RUN] BUY cost=%s on %s", cost_precise, symbol)
         return {"symbol": symbol, "side": "buy", "cost": cost_precise, "dry_run": True}
     logger.info("Executing: BUY cost=%s on %s", cost_precise, symbol)
-    order = exchange.create_market_buy_order_with_cost(symbol, cost_precise)
+    order = _restore_order_identity(
+        exchange.create_market_buy_order_with_cost(symbol, cost_precise), symbol, "buy"
+    )
     fee = order.get("fee") or {}
     order["fee_amount"] = fee.get("cost")
     order["fee_currency"] = fee.get("currency")
