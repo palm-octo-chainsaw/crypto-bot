@@ -127,6 +127,44 @@ def test_kraken_balance_is_zero_for_untracked_symbols(bare_balance):
     assert bare_balance._kraken_balance("BTC", {"XXBT": 0.25}) == 0.25
 
 
+def test_venue_balances_keep_holdings_separate_and_aggregate_back(monkeypatch, bare_balance):
+    """Execution sizes legs per venue; snapshots and targets still need one total."""
+    monkeypatch.setattr(Balance, "get_binance_balance",
+                        lambda self, symbol: {"BTC": 0.1, "USDC": 200.0}.get(symbol, 0.0))
+    monkeypatch.setattr(Balance, "_arbitrum_usdc", lambda self: 50.0)
+    monkeypatch.setattr(Balance, "_arbitrum_eth", lambda self: 1.0)
+    monkeypatch.setattr(Balance, "get_hyperliquid_balances",
+                        lambda self: {"HYPE": 20.0, "USDC": 5.0})
+    bare_balance.kraken_client = FakeKrakenClient(
+        result={"error": [], "result": {"XXBT": "0.9", "PAXG": "0.5"}})
+
+    venues = bare_balance.get_venue_balances()
+
+    assert venues[Balance.BINANCE]["BTC"] == pytest.approx(0.1)
+    assert venues[Balance.KRAKEN]["BTC"] == pytest.approx(0.9)
+    assert venues[Balance.HYPERLIQUID]["HYPE"] == pytest.approx(20.0)
+    assert venues[Balance.ARBITRUM]["ETH"] == pytest.approx(1.0)
+    # PAXG is Kraken-only — Binance rejects its orders (-2010), so crediting a Binance
+    # balance would let the planner size a leg that venue will never fill.
+    assert venues[Balance.KRAKEN]["PAXG"] == pytest.approx(0.5)
+    assert "PAXG" not in venues[Balance.BINANCE]
+
+    total = Balance.aggregate(venues)
+    assert set(total) == set(Balance.TRACKED_SYMBOLS)
+    assert total["BTC"] == pytest.approx(1.0)
+    assert total["USDC"] == pytest.approx(255.0)  # 200 Binance + 50 Arbitrum + 5 Hyperliquid
+
+
+def test_spot_balance_equals_the_sum_of_its_venues(monkeypatch, bare_balance):
+    """get_spot_balance is now derived from the split — the two must not drift apart."""
+    monkeypatch.setattr(Balance, "get_binance_balance", lambda self, symbol: 2.0)
+    monkeypatch.setattr(Balance, "_arbitrum_usdc", lambda self: 3.0)
+    monkeypatch.setattr(Balance, "_arbitrum_eth", lambda self: 4.0)
+    monkeypatch.setattr(Balance, "get_hyperliquid_balances", lambda self: {"HYPE": 7.0})
+
+    assert bare_balance.get_spot_balance() == Balance.aggregate(bare_balance.get_venue_balances())
+
+
 def test_leverage_balance_reads_every_tracked_token(monkeypatch, bare_balance):
     seen = []
     monkeypatch.setattr(Balance, "_get_erc20_balance",

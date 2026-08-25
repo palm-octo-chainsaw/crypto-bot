@@ -18,7 +18,9 @@ def _portfolio(degraded: set[str]) -> pf.Portfolio:
     p.summary = MagicMock()
     p.balance = MagicMock()
     p.balance.degraded = degraded
-    p.balance.get_spot_balance.return_value = {"BTC": 0.1}
+    p.portfolio = {"BTC": 0.1}
+    p.venues = {Balance.BINANCE: {"BTC": 0.1}}
+    p.update_portfolio = lambda: None
     p.targets = {"BTC": 100.0}
     return p
 
@@ -26,8 +28,8 @@ def _portfolio(degraded: set[str]) -> pf.Portfolio:
 def _offline_venues():
     """Patch out every venue except the one under test."""
     return (
-        patch.object(Balance, "get_usdc_balance", return_value=0.0),
-        patch.object(Balance, "get_eth_balance", return_value=0.0),
+        patch.object(Balance, "_arbitrum_usdc", return_value=0.0),
+        patch.object(Balance, "_arbitrum_eth", return_value=0.0),
         patch.object(Balance, "get_hyperliquid_balances", return_value={}),
     )
 

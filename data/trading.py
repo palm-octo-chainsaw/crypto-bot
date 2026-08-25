@@ -17,13 +17,19 @@ def create_binance(api_key: str, api_secret: str):
     return exchange
 
 
+# Max slippage Hyperliquid market orders are allowed. A buy is submitted at
+# price * (1 + this), so budgeting a buy against free USDC has to leave the same
+# headroom or the order costs more than the wallet holds and is rejected outright.
+HYPERLIQUID_SLIPPAGE = 0.005
+
+
 def create_hyperliquid(wallet_address: str, private_key: str):
     exchange = ccxt.hyperliquid({
         "walletAddress": wallet_address,
         "privateKey": private_key,
         "enableRateLimit": True,
     })
-    exchange.options["defaultSlippage"] = 0.005  # 0.5% max slippage for market orders
+    exchange.options["defaultSlippage"] = HYPERLIQUID_SLIPPAGE
     exchange.load_markets()
     return exchange
 

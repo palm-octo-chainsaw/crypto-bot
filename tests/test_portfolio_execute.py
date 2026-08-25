@@ -53,14 +53,77 @@ def test_sell_full_liquidation_uses_free_balance_when_snapshot_overstates():
     assert results[0].get("error") is None
 
 
-def test_sell_partial_fraction():
-    """Planned 0.5 of holdings 2.0 → sells 50% of free balance."""
+def test_sell_executes_the_full_plan_when_the_venue_can_cover_it():
+    """Planned 1.0 with 1.8 free here → sell 1.0.
+
+    Sizing this as planned/aggregate * free used to shrink every leg of a position
+    that is spread across venues: the same plan sold 0.9 when the venue held plenty.
+    """
     ex = FakeExchange(free={"ETH": 1.8}, markets={"ETH/USDC": {}})
     portfolio = _portfolio({"ETH": 2.0})
     portfolio._execute_sells(ex, {"ETH": 1.0}, {"ETH": 2500.0}, dry_run=False)
 
     _, _, _, amount = ex.orders[0]
-    assert amount == pytest.approx(0.9, rel=1e-4)
+    assert amount == pytest.approx(1.0, rel=1e-4)
+
+
+def test_sell_is_capped_by_venue_balance_and_names_what_it_could_not_reach():
+    """Plan wants 0.5 BTC but only 0.1 is on Binance; the other 0.9 sits on Kraken.
+
+    There is no transfer path between venues, so the leg can only be filled out of the
+    Binance balance. Sell all of it and report the remainder rather than scaling the
+    order down by the aggregate holding, which sold 0.05 and called it a success.
+    """
+    ex = FakeExchange(free={"BTC": 0.1}, markets={"BTC/USDC": {}})
+    portfolio = _portfolio({"BTC": 1.0})
+    portfolio.venues = {"binance": {"BTC": 0.1}, "kraken": {"BTC": 0.9}}
+
+    results = portfolio._execute_sells(ex, {"BTC": 0.5}, {"BTC": 50_000.0}, dry_run=False)
+
+    _, _, _, amount = ex.orders[0]
+    assert amount == pytest.approx(0.1)
+    stranded = next(r for r in results if r.get("unavailable"))
+    assert stranded["held_on"] == "kraken"
+    assert stranded["amount"] == pytest.approx(0.4)
+    assert stranded["usd_value"] == pytest.approx(20_000.0)
+
+
+def test_sell_reports_stranded_holdings_when_the_venue_has_none_of_the_token():
+    """Everything is on Kraken — nothing to sell here, and the report has to say why."""
+    ex = FakeExchange(free={"BTC": 0.0}, markets={"BTC/USDC": {}})
+    portfolio = _portfolio({"BTC": 1.0})
+    portfolio.venues = {"binance": {"BTC": 0.0}, "kraken": {"BTC": 1.0}}
+
+    results = portfolio._execute_sells(ex, {"BTC": 0.5}, {"BTC": 50_000.0}, dry_run=False)
+
+    assert ex.orders == []
+    assert results[0]["error"] == "zero balance"
+    assert results[1]["held_on"] == "kraken"
+
+
+def test_sell_shortfall_is_silent_without_a_venue_breakdown():
+    """A shortfall from a stale snapshot is not a transfer problem — don't invent a venue."""
+    ex = FakeExchange(free={"ETH": 1.16589293}, markets={"ETH/USDC": {}})
+    portfolio = _portfolio({"ETH": 1.1673})
+
+    results = portfolio._execute_sells(ex, {"ETH": 1.1673}, {"ETH": 2500.0}, dry_run=False)
+
+    assert not any(r.get("unavailable") for r in results)
+
+
+def test_buy_reports_stable_that_cannot_reach_the_venue():
+    """The plan counted Kraken USDC toward the budget, but only Binance USDC funds these."""
+    ex = FakeExchange(free={"USDC": 500.0}, markets={"BTC/USDC": {}})
+    portfolio = _portfolio({"BTC": 0.0, "USDC": 1000.0})
+    portfolio.venues = {"binance": {"USDC": 500.0}, "kraken": {"USDC": 500.0}}
+
+    results = portfolio._execute_buys(ex, {"BTC": 0.02}, {"BTC": 50_000.0}, dry_run=False)
+
+    costs = {symbol: cost for kind, symbol, _, cost in ex.orders if kind == "cost"}
+    assert costs["BTC/USDC"] == pytest.approx(500.0)
+    stranded = next(r for r in results if r.get("unavailable"))
+    assert stranded["held_on"] == "kraken"
+    assert stranded["usd_value"] == pytest.approx(500.0)
 
 
 def test_buy_uses_quote_order_qty_fraction_of_free_usdc():
@@ -113,6 +176,20 @@ def test_buy_no_stable_balance_errors_out():
 
     assert ex.orders == []
     assert "USDC" in results[0]["error"]
+
+
+def test_buy_with_no_stable_on_the_venue_points_at_where_it_actually_is():
+    """The aggregate shows $500 USDC, but every cent of it is on Kraken."""
+    ex = FakeExchange(free={"USDC": 0.0}, markets={"BTC/USDC": {}})
+    portfolio = _portfolio({"BTC": 0.0, "USDC": 500.0})
+    portfolio.venues = {"binance": {"USDC": 0.0}, "kraken": {"USDC": 500.0}}
+
+    results = portfolio._execute_buys(ex, {"BTC": 0.01}, {"BTC": 50_000.0}, dry_run=False)
+
+    assert ex.orders == []
+    assert "USDC" in results[0]["error"]
+    assert results[1]["held_on"] == "kraken"
+    assert results[1]["usd_value"] == pytest.approx(500.0)
 
 
 def test_sell_zero_free_balance_skips_order():
