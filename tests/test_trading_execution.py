@@ -225,3 +225,33 @@ def test_execute_trade_keeps_first_leg_when_buy_leg_has_no_pair():
 
     assert len(trades) == 1
     assert trades[0]["symbol"] == "ETH/USDC"
+
+
+def test_create_binance_enables_rate_limiting_and_loads_markets(monkeypatch):
+    created = {}
+
+    class FakeBinance:
+        def __init__(self, config):
+            created["config"] = config
+            self.loaded = False
+
+        def load_markets(self):
+            self.loaded = True
+
+    monkeypatch.setattr(trading.ccxt, "binance", FakeBinance)
+
+    exchange = trading.create_binance("key", "secret")
+
+    assert created["config"] == {"apiKey": "key", "secret": "secret", "enableRateLimit": True}
+    assert exchange.loaded is True
+
+
+def test_execute_trade_routes_through_inverted_stable_pairs():
+    """Only USDC-base markets exist: leg 1 buys the stable pair, leg 2 sells it."""
+    ex = FakeExchange(markets={"USDC/ETH": {}, "USDC/BTC": {}})
+    trades = trading.execute_trade(ex, "ETH", "BTC", 1.0, {"ETH": 2500.0, "BTC": 50_000.0},
+                                   stable="USDC", dry_run=True)
+
+    assert [(t["symbol"], t["side"]) for t in trades] == [("USDC/ETH", "buy"), ("USDC/BTC", "sell")]
+    assert trades[0]["amount"] == pytest.approx(2500.0)
+    assert trades[1]["amount"] == pytest.approx(2500.0)

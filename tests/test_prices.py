@@ -68,3 +68,12 @@ def test_fetch_prices_raises_when_symbol_missing(monkeypatch):
 
     with pytest.raises(PriceFetchError, match="ETH"):
         fetch_prices(["BTC", "ETH"])
+
+
+def test_fetch_prices_raises_when_a_coin_comes_back_without_a_usd_quote(monkeypatch):
+    """CoinGecko can answer with the id but no `usd` key — that is a missing price, not zero."""
+    payload = {"bitcoin": {"usd": 100.0}, "ethereum": {}}
+    monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: FakeResponse(payload))
+
+    with pytest.raises(PriceFetchError, match="missing prices for: ETH"):
+        fetch_prices(["BTC", "ETH"])

@@ -485,3 +485,82 @@ def test_execute_rebalance_persists_only_live_trades(monkeypatch, live_portfolio
     live = live_portfolio.execute_rebalance(dry_run=False)
     assert "LIVE" in live
     assert [r["symbol"] for r in rows] == ["BTC/USDC"]
+
+
+def test_get_and_set_target_round_trip():
+    p = _portfolio({})
+    p.targets = {"BTC": 60.0}
+
+    assert p.get_targets() == {"BTC": 60.0}
+    assert p.set_target("ETH", 40) == {"BTC": 60.0, "ETH": 40}
+
+
+def test_cross_pairs_skips_a_leg_planned_at_zero(monkeypatch):
+    """A leg left at 0 after an earlier match must not become a zero-size order."""
+    monkeypatch.setattr(pf, "MIN_TRADE_USD", 0.0)
+    ex = FakeExchange(free={"ETH": 1.0}, markets={"ETH/BTC": {}})
+    p = _portfolio({"ETH": 1.0})
+
+    results = p._execute_cross_pairs(ex, {"ETH": 0.0}, {"BTC": 0.02},
+                                     {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
+
+    assert results == [] and ex.orders == []
+
+
+def test_listener_reports_drift_and_records_a_snapshot(monkeypatch):
+    from summary import Summary
+
+    p = _portfolio({"BTC": 0.02, "USDC": 1000.0})
+    p.summary = Summary()
+    p.targets = {"BTC": 50.0, "USDC": 50.0}
+    p.balance = MagicMock()
+    p.balance.degraded = set()
+    monkeypatch.setattr(p, "update_portfolio", lambda: None)
+    monkeypatch.setattr(p, "fetch_live_data",
+                        lambda: ({"BTC": 50_000.0, "USDC": 1.0},
+                                 {"BTC": 1500.0, "USDC": 1000.0}, 2500.0))
+    monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 3)
+    snapshots = []
+    monkeypatch.setattr(pf, "record_snapshot", lambda **kwargs: snapshots.append(kwargs))
+
+    out = p.listener()
+
+    assert p.send_rebalance is True
+    assert "Rebalance Needed" in out and "Rebalance Plan" in out
+    assert snapshots[0]["signal_id"] == 3
+    assert snapshots[0]["partial"] is False
+
+
+def test_listener_flags_a_partial_snapshot_when_a_venue_is_degraded(monkeypatch):
+    from summary import Summary
+
+    p = _portfolio({"BTC": 0.02, "USDC": 1000.0})
+    p.summary = Summary()
+    p.targets = {"BTC": 50.0, "USDC": 50.0}
+    p.balance = MagicMock()
+    p.balance.degraded = {"kraken"}
+    monkeypatch.setattr(p, "update_portfolio", lambda: None)
+    monkeypatch.setattr(p, "fetch_live_data",
+                        lambda: ({"BTC": 50_000.0, "USDC": 1.0},
+                                 {"BTC": 1000.0, "USDC": 1000.0}, 2000.0))
+    monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 3)
+    snapshots = []
+    monkeypatch.setattr(pf, "record_snapshot", lambda **kwargs: snapshots.append(kwargs))
+
+    out = p.listener()
+
+    assert "Partial snapshot" in out and "kraken" in out
+    assert snapshots[0]["partial"] is True
+
+
+def test_cross_pairs_keeps_the_larger_buy_leg_for_usdc_routing():
+    """Sell side is the smaller one — the buy leg survives the cross with a remainder."""
+    ex = FakeExchange(free={"ETH": 0.12}, markets={"ETH/BTC": {}, "ETH/USDC": {}, "BTC/USDC": {}})
+    p = _portfolio({"ETH": 0.12})
+    sells, buys = {"ETH": 0.12}, {"BTC": 0.02}   # $300 sell vs $1000 buy
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert "ETH" not in sells, "the sell leg is fully consumed"
+    assert buys["BTC"] * prices["BTC"] == pytest.approx(700.0, rel=1e-2)
