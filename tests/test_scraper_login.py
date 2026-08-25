@@ -277,3 +277,38 @@ async def test_fetch_signal_tolerates_screenshot_failure(monkeypatch):
         await scraper.fetch_signal()
     assert "TRW page timed out" in str(exc.value)
     assert browser.closed
+
+
+@pytest.mark.asyncio
+async def test_login_completes_through_the_totp_modal(monkeypatch):
+    """No banners: the flow fills the form, types the TOTP code and confirms."""
+    page = FakePage()
+    typed = []
+
+    async def record(text, delay=0):
+        typed.append(text)
+    page.keyboard.type = record
+
+    await _login(page)
+
+    assert typed and typed[0].isdigit() and len(typed[0]) == 6
+    assert page.screenshots == [], "a clean login takes no debug screenshot"
+
+
+@pytest.mark.asyncio
+async def test_login_screenshots_when_no_totp_field_is_found():
+    """Every TOTP selector misses — capture the page and say where it was saved."""
+    class NoTotpPage(FakePage):
+        def locator(self, selector):
+            located = super().locator(selector)
+            if 'input[type="password"]' in selector or 'input[type="email"' in selector \
+                    or "button" in selector:
+                return located
+            if "input" in selector:
+                return FakeLocator(count=0, visible=False)
+            return located
+
+    page = NoTotpPage()
+    with pytest.raises(RuntimeError, match="Could not find TOTP input field"):
+        await _login(page)
+    assert page.screenshots == [scraper.DEBUG_SCREENSHOT]

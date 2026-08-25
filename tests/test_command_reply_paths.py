@@ -77,3 +77,44 @@ async def test_fetch_signal_reports_an_empty_scrape(monkeypatch, fake_update, fa
     await ch.fetch_signal(fake_update, fake_context)
 
     assert fake_update.message.replies[-1] == "⚠️ No allocations found in signal."
+
+
+@pytest.mark.asyncio
+async def test_post_init_registers_commands_without_a_chat_id(monkeypatch, fake_application):
+    """No CHAT_ID configured: still publish the command menu, just skip the announcement."""
+    monkeypatch.setattr(ch, "CHAT_ID", None)
+
+    await ch.post_init(fake_application)
+
+    assert fake_application.bot.commands
+    assert fake_application.bot.sent == []
+
+
+@pytest.mark.asyncio
+async def test_post_stop_is_silent_without_a_chat_id(monkeypatch, fake_application):
+    monkeypatch.setattr(ch, "CHAT_ID", None)
+
+    await ch.post_stop(fake_application)
+
+    assert fake_application.bot.sent == []
+
+
+@pytest.mark.asyncio
+async def test_rebalance_dry_run_skips_the_live_warning(monkeypatch, fake_update, fake_context):
+    fake_context.args = []
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", lambda dry_run: f"dry_run={dry_run}")
+
+    await ch.rebalance(fake_update, fake_context)
+
+    assert len(fake_update.message.replies) == 1
+    assert "dry_run=True" in fake_update.message.replies[0]
+
+
+def test_signal_section_omits_a_missing_timestamp(monkeypatch):
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"BTC": 100.0})
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: None)
+
+    out = "\n".join(ch._format_signal_section())
+
+    assert "BTC: 100.0%" in out
+    assert "Posted:" not in out

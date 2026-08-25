@@ -41,14 +41,13 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-py3.14-${{ hashFiles('requirements.txt') }}
+          key: pip-${{ runner.os }}-py3.14-${{ hashFiles('requirements.lock', 'requirements-dev.lock') }}
           restore-keys: |
             pip-${{ runner.os }}-py3.14-
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov
+          pip install -r requirements.lock -r requirements-dev.lock
 
       - name: Save pip cache
         if: github.ref == 'refs/heads/master' && steps.pip-cache.outputs.cache-hit != 'true'
