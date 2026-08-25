@@ -28,10 +28,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # `cache: pip` would write an Actions cache entry per ref — PR scopes that
+      # nothing else can read and that only crowd the repo's 10 GB budget.
+      # warm-build-cache.yml is the single writer; installing from PyPI costs a
+      # few seconds a run and leaves nothing behind.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-          cache: pip
 
       - name: Install dependencies
         run: |
