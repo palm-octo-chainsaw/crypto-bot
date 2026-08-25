@@ -8,3 +8,9 @@ __pycache__/
 *.db
 coverage.xml
 .coverage
+.ruff_cache
+.pytest_cache
+
+logs
+docs
+local-*
