@@ -28,18 +28,34 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `cache: pip` would write an Actions cache entry per ref — PR scopes that
-      # nothing else can read and that only crowd the repo's 10 GB budget.
-      # warm-build-cache.yml is the single writer; installing from PyPI costs a
-      # few seconds a run and leaves nothing behind.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+
+      # `cache: pip` on setup-python writes an entry per ref, and this job runs
+      # on every PR push — scopes only their own run can read, filling the repo's
+      # 10 GB budget for nothing. Restore here, save below on master only: an
+      # entry on the default branch is readable from every ref, so PRs get the
+      # wheels without leaving anything behind.
+      - id: pip-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-py3.14-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-${{ runner.os }}-py3.14-
 
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
           pip install pytest pytest-asyncio pytest-cov
+
+      - name: Save pip cache
+        if: github.ref == 'refs/heads/master' && steps.pip-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ steps.pip-cache.outputs.cache-primary-key }}
 
       - name: Run tests with coverage
         env:
