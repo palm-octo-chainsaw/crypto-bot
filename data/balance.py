@@ -54,9 +54,20 @@ class Balance:
     USDC_CONTRACT_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
 
     ARBITRUM, BINANCE, HYPERLIQUID, KRAKEN = "arbitrum", "binance", "hyperliquid", "kraken"
-    # Venues re-read on every get_spot_balance(). Binance is cached until an explicit
+    # Venues re-read on every get_venue_balances(). Binance is cached until an explicit
     # refresh, so its flag is owned by _load_binance_balances() instead.
     LIVE_VENUES = frozenset({ARBITRUM, KRAKEN, HYPERLIQUID})
+
+    # Tracked symbols in report order; also the key set of the aggregate portfolio.
+    TRACKED_SYMBOLS = ("BTC", "PAXG", "SOL", "SUI", "USDC",
+                       "ETH", "DOGE", "XRP", "LINK", "HYPE", "BNB")
+    # Which symbols each venue is read for. A symbol left out of a venue's set is not
+    # counted there even if the account holds it: PAXG is deliberately Kraken-only
+    # because Binance rejects PAXG orders (-2010), so crediting a Binance PAXG balance
+    # would let the planner size a leg that venue will never fill.
+    BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB"})
+    ARBITRUM_SYMBOLS = frozenset({"USDC", "ETH"})
+    HYPERLIQUID_SYMBOLS = frozenset({"USDC", "HYPE"})
 
     LEVERAGE_TOKENS = {
         "BTCBULL2X": "0xe3254397f5D9C0B69917EBb49B49e103367B406f",
@@ -122,7 +133,14 @@ class Balance:
             return 0.0
         return float(kraken_raw.get(kraken_key, 0.0))
 
-    def get_spot_balance(self) -> dict:
+    def get_venue_balances(self) -> dict[str, dict[str, float]]:
+        """Holdings split by venue: {venue: {symbol: amount}}.
+
+        The bot has no transfer path between venues, so a rebalance leg can only be
+        filled out of the balance sitting on the venue that will run it. Sizing off the
+        aggregate instead sells a fraction of what was intended whenever the position is
+        spread across venues — and silently reports that partial fill as a success.
+        """
         # Clearing Binance here would drop a failure that just happened, since
         # update_portfolio() refreshes Binance before calling this.
         self._degraded -= self.LIVE_VENUES
@@ -132,18 +150,20 @@ class Balance:
         hl = self.get_hyperliquid_balances()
 
         return {
-            "BTC":  self.get_binance_balance("BTC") + self._kraken_balance("BTC", kraken_raw),
-            "PAXG": self._kraken_balance("PAXG", kraken_raw),
-            "SOL":  self.get_binance_balance("SOL") + self._kraken_balance("SOL", kraken_raw),
-            "SUI":  self.get_binance_balance("SUI"),
-            "USDC": self.get_usdc_balance() + self._kraken_balance("USDC", kraken_raw) + hl.get("USDC", 0.0),
-            "ETH":  self.get_eth_balance() + self._kraken_balance("ETH", kraken_raw),
-            "DOGE": self.get_binance_balance("DOGE") + self._kraken_balance("DOGE", kraken_raw),
-            "XRP":  self.get_binance_balance("XRP") + self._kraken_balance("XRP", kraken_raw),
-            "LINK": self.get_binance_balance("LINK") + self._kraken_balance("LINK", kraken_raw),
-            "HYPE": hl.get("HYPE", 0.0),
-            "BNB":  self.get_binance_balance("BNB"),
+            self.BINANCE: {s: self.get_binance_balance(s) for s in self.BINANCE_SYMBOLS},
+            self.KRAKEN: {s: self._kraken_balance(s, kraken_raw) for s in self.KRAKEN_SYMBOL_MAP},
+            self.ARBITRUM: {"USDC": self._arbitrum_usdc(), "ETH": self._arbitrum_eth()},
+            self.HYPERLIQUID: {s: hl.get(s, 0.0) for s in self.HYPERLIQUID_SYMBOLS},
         }
+
+    @classmethod
+    def aggregate(cls, venues: dict[str, dict[str, float]]) -> dict[str, float]:
+        """Collapse a per-venue breakdown into one balance per tracked symbol."""
+        return {symbol: sum(held.get(symbol, 0.0) for held in venues.values())
+                for symbol in cls.TRACKED_SYMBOLS}
+
+    def get_spot_balance(self) -> dict:
+        return self.aggregate(self.get_venue_balances())
 
     def get_leverage_balance(self) -> dict:
         return {
@@ -172,17 +192,23 @@ class Balance:
             self._mark_degraded(self.ARBITRUM)
             return 0.0
 
-    def get_usdc_balance(self) -> float:
-        return self._get_erc20_balance(self.USDC_CONTRACT_ADDRESS) + self.get_binance_balance("USDC")
+    def _arbitrum_usdc(self) -> float:
+        return self._get_erc20_balance(self.USDC_CONTRACT_ADDRESS)
 
-    def get_eth_balance(self) -> float:
+    def _arbitrum_eth(self) -> float:
         try:
             balance_wei = self.w3.eth.get_balance(Web3.to_checksum_address(META_MASK))
-            return float(self.w3.from_wei(balance_wei, 'ether')) + self.get_binance_balance("ETH")
+            return float(self.w3.from_wei(balance_wei, 'ether'))
         except Exception:
             logger.error("Error fetching ETH balance", exc_info=True)
             self._mark_degraded(self.ARBITRUM)
             return 0.0
+
+    def get_usdc_balance(self) -> float:
+        return self._arbitrum_usdc() + self.get_binance_balance("USDC")
+
+    def get_eth_balance(self) -> float:
+        return self._arbitrum_eth() + self.get_binance_balance("ETH")
 
     def _load_binance_balances(self) -> None:
         if self._binance_balances is not None or not self.binance_client:

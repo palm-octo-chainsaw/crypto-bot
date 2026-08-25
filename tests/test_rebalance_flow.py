@@ -76,6 +76,14 @@ def test_format_trade_line_dust_names_the_minimum():
     assert "DUST ETH/USDC ($0.25)" in line and "below $5.00 minimum" in line
 
 
+def test_format_trade_line_unavailable_names_the_venue_holding_the_coins():
+    line = pf._format_trade_line({"symbol": "BTC/USDC", "side": "sell", "amount": 0.4,
+                                  "usd_value": 20_000.0, "venue": "binance",
+                                  "held_on": "kraken", "unavailable": True})
+    assert "BTC/USDC" in line and "$20000.00" in line
+    assert "not executable on binance" in line and "sits on kraken" in line
+
+
 def test_format_trade_line_skipped_and_error():
     assert "SKIP HYPE/USDC" in pf._format_trade_line(
         {"symbol": "HYPE/USDC", "side": "sell", "skipped": True})
@@ -378,10 +386,89 @@ def test_execute_hype_reports_order_failure(monkeypatch):
         raise RuntimeError("Order has zero size")
     monkeypatch.setattr(pf, "place_order", boom)
     p = _portfolio({"HYPE": 50.0})
+    p.balance = MagicMock()
+    p.balance.get_hyperliquid_free_balance.return_value = 10_000.0
 
     results = p._execute_hype(10.0, "buy", {"HYPE": 48.0}, dry_run=False)
 
     assert "Order has zero size" in results[0]["error"]
+
+
+def test_execute_hype_buy_is_capped_by_hyperliquid_usdc(monkeypatch):
+    """Hyperliquid is funded separately and the bot cannot move USDC to it, so a buy sized
+    off the pooled portfolio must be cut to what that wallet can pay — including the
+    slippage headroom a market buy is submitted with — instead of being rejected."""
+    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
+    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
+    hl = MagicMock()
+    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
+
+    placed = []
+    monkeypatch.setattr(pf, "place_order",
+                        lambda exchange, symbol, side, amount, dry_run, price=None:
+                        placed.append(amount) or {"id": "hl1", "status": "closed"})
+
+    p = _portfolio({"HYPE": 5.0})
+    p.balance = MagicMock()
+    p.balance.get_hyperliquid_free_balance.return_value = 480.0
+
+    p._execute_hype(amount=50.0, side="buy", prices={"HYPE": 48.0}, dry_run=False)
+
+    p.balance.get_hyperliquid_free_balance.assert_called_once_with("USDC")
+    assert placed[0] == pytest.approx(480.0 / (48.0 * 1.005), rel=1e-4)
+    assert placed[0] < 50.0, "the plan's size must not survive an underfunded wallet"
+
+
+def test_execute_hype_buy_skips_when_hyperliquid_has_no_usdc(monkeypatch):
+    """No USDC on Hyperliquid → skip cleanly rather than post an order it cannot pay for."""
+    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
+    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
+    hl = MagicMock()
+    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
+
+    placed = []
+    monkeypatch.setattr(pf, "place_order", lambda *a, **kw: placed.append(a) or {"id": "x"})
+
+    p = _portfolio({"HYPE": 5.0})
+    p.balance = MagicMock()
+    p.balance.get_hyperliquid_free_balance.return_value = 0.0
+
+    results = p._execute_hype(amount=50.0, side="buy", prices={"HYPE": 48.0}, dry_run=False)
+
+    assert placed == []
+    assert results[0]["error"] == pf.ERR_SIZE_BELOW_PRECISION
+
+
+def test_binance_outage_still_persists_and_reports_hyperliquid_fills(monkeypatch, live_portfolio):
+    """Regression: execute_rebalance returned early when create_binance raised, jumping past
+    _persist_trades. A HYPE order that had already filled on Hyperliquid was dropped from the
+    trade history and never reached the user's report."""
+    live_portfolio.portfolio = {"HYPE": 50.0, "BTC": 0.02, "USDC": 1000.0}
+    live_portfolio.targets = {"HYPE": 10.0, "BTC": 80.0, "USDC": 10.0}
+    monkeypatch.setattr(live_portfolio, "fetch_live_data",
+                        lambda: ({"HYPE": 48.0, "BTC": 50_000.0, "USDC": 1.0},
+                                 {"HYPE": 2400.0, "BTC": 1000.0, "USDC": 1000.0}, 4400.0))
+    monkeypatch.setattr(
+        pf.Portfolio, "_execute_hype",
+        lambda self, amount, side, prices, dry_run: [
+            {"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "id": "hl1"}],
+    )
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("dns failure")
+    monkeypatch.setattr(pf, "create_binance", boom)
+    rows = []
+    monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
+
+    out = live_portfolio.execute_rebalance(dry_run=False)
+
+    assert "Failed to connect to Binance" in out
+    assert "HYPE/USDC" in out, "the Hyperliquid fill must still be reported"
+    recorded = {(r["symbol"], r["status"]) for r in rows}
+    assert ("HYPE/USDC", "filled") in recorded
+    assert ("BTC/USDC", "error") in recorded, "the unattempted Binance leg is auditable too"
 
 
 def test_execute_rebalance_refuses_without_binance_credentials(monkeypatch):
