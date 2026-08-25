@@ -1,8 +1,10 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
 
 from telegram import Update, BotCommand
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import ContextTypes, ExtBot, Application
 
 from utils.helpers import format_message, write_json
@@ -25,11 +27,70 @@ GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
 SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 SIGNAL_POLL_JOB_NAME = "signal_poll"
 
+HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", "/tmp/heartbeat")
+HEARTBEAT_INTERVAL_SECONDS = 60
+HEARTBEAT_JOB_NAME = "heartbeat"
+
+SEND_ATTEMPTS = 3
+SEND_RETRY_BASE_DELAY_SECONDS = 2.0
+
 _last_poll_time: datetime | None = None
 _last_poll_status: str = "not yet run"
 _poll_success_count: int = 0
 _poll_failure_count: int = 0
 _started_at: datetime = datetime.now(timezone.utc)
+
+
+async def _send_with_retry(send, *args, **kwargs):
+    """Call a Telegram send coroutine, retrying transient network failures.
+
+    The long-poll connection and the one used for outgoing calls are separate
+    pools, so a resolver hiccup breaks replies while `get_updates` keeps
+    succeeding on its already-open socket: commands are received and answers
+    vanish, with nothing on screen to say why. Retrying turns a short blip into
+    a late reply instead of silence.
+
+    BadRequest subclasses NetworkError in PTB but means the message itself is
+    wrong (bad Markdown, empty text) — resending it fails identically.
+    """
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        try:
+            return await send(*args, **kwargs)
+        except BadRequest:
+            raise
+        except NetworkError as err:
+            if attempt == SEND_ATTEMPTS:
+                logger.error("Telegram send failed after %d attempts: %s", attempt, err)
+                raise
+            delay = SEND_RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1)
+            logger.warning(
+                "Telegram send failed (attempt %d/%d): %s — retrying in %.0fs",
+                attempt, SEND_ATTEMPTS, err, delay,
+            )
+            await asyncio.sleep(delay)
+
+
+async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Stamp the liveness file from inside the event loop.
+
+    A hung loop keeps the process alive and the container "Running", so nothing
+    outside can tell the bot stopped working. The probe in k8s/deployment.yaml
+    reads this file's age and restarts the pod once it goes stale.
+    """
+    try:
+        with open(HEARTBEAT_FILE, "w") as file:
+            file.write(str(int(datetime.now(timezone.utc).timestamp())))
+    except OSError as err:
+        logger.warning("Could not write heartbeat file %s: %s", HEARTBEAT_FILE, err)
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log whatever a handler raised, with the traceback.
+
+    Without a registered handler PTB only logs "No error handlers are
+    registered", which is how a night of failed replies looked like nothing.
+    """
+    logger.error("Unhandled exception while processing update: %s", context.error, exc_info=context.error)
 
 
 async def set_bot_commands(bot: ExtBot) -> None:
@@ -52,7 +113,8 @@ async def set_bot_commands(bot: ExtBot) -> None:
 async def post_init(application: Application) -> None:
     await set_bot_commands(application.bot)
     if CHAT_ID:
-        await application.bot.send_message(
+        await _send_with_retry(
+            application.bot.send_message,
             chat_id=CHAT_ID,
             text="🟢 *Bot online* — polling TRW every 15 min",
             parse_mode="Markdown",
@@ -61,7 +123,8 @@ async def post_init(application: Application) -> None:
 
 async def post_stop(application: Application) -> None:
     if CHAT_ID:
-        await application.bot.send_message(
+        await _send_with_retry(
+            application.bot.send_message,
             chat_id=CHAT_ID,
             text="🔴 *Bot stopped*",
             parse_mode="Markdown",
@@ -123,7 +186,7 @@ async def puller(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         await _reply(update, "🟢 Puller started — polling TRW every 15 min.", formatted=False)
     else:
-        await update.message.reply_text("⚠️ Usage: /puller [start|stop]")
+        await _send_with_retry(update.message.reply_text, "⚠️ Usage: /puller [start|stop]")
 
 
 def _format_uptime(delta: timedelta) -> str:
@@ -324,7 +387,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _reply(update: Update, message: str, *, formatted: bool = True) -> None:
     text = format_message(message) if formatted else message
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await _send_with_retry(update.message.reply_text, text, parse_mode="Markdown")
 
 
 async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -334,7 +397,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Command failed: %s", error, exc_info=True)
         await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
         return
-    await update.message.reply_text(message, parse_mode="Markdown")
+    await _send_with_retry(update.message.reply_text, message, parse_mode="Markdown")
 
 
 async def get_targets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -355,7 +418,7 @@ async def set_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         write_json(TARGETS_FILE, portfolio.get_targets())
         await _reply(update, f"✅ Target for {symbol} set to {percent}%", formatted=False)
     except (IndexError, ValueError):
-        await update.message.reply_text("⚠️ Usage: /set_target SYMBOL PERCENT")
+        await _send_with_retry(update.message.reply_text, "⚠️ Usage: /set_target SYMBOL PERCENT")
 
 
 async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -390,7 +453,8 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
 async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     live = context.args and context.args[0].lower() == "live"
     if live:
-        await update.message.reply_text(
+        await _send_with_retry(
+            update.message.reply_text,
             "⚠️ *LIVE MODE* — executing real trades on Binance...", parse_mode="Markdown"
         )
     await _reply(update, portfolio.execute_rebalance(dry_run=not live))
@@ -443,33 +507,37 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     global _credentials_invalid
     now = datetime.now(timezone.utc)
     if _credentials_invalid:
-        await update.message.reply_text(
+        await _send_with_retry(
+            update.message.reply_text,
             "🔐 TRW credentials are invalid — scrape paused. Update TRW_PASSWORD and restart the container."
         )
         return
     remaining = _cooldown_remaining(now)
     if remaining is not None:
         mins = int(remaining.total_seconds() // 60)
-        await update.message.reply_text(
+        await _send_with_retry(
+            update.message.reply_text,
             f"⏳ TRW rate-limit cooldown active — {mins} min remaining. Try again later."
         )
         return
 
-    await update.message.reply_text("🔍 Fetching latest RSPS signal from TRW...")
+    await _send_with_retry(update.message.reply_text, "🔍 Fetching latest RSPS signal from TRW...")
 
     try:
         allocations, signal_time = await scrape_signal()
     except TRWRateLimitError as error:
         duration = _set_rate_limit_cooldown(now, error)
         logger.warning("fetch_signal: %s — cooling down for %s min", error, int(duration.total_seconds() // 60))
-        await update.message.reply_text(
+        await _send_with_retry(
+            update.message.reply_text,
             f"⏳ TRW rate-limited — scrape paused for {int(duration.total_seconds() // 60)} min."
         )
         return
     except TRWInvalidCredentialsError as error:
         _credentials_invalid = True
         logger.error("fetch_signal: %s", error)
-        await update.message.reply_text(
+        await _send_with_retry(
+            update.message.reply_text,
             "🔐 TRW rejected credentials. Scrape paused — update TRW_PASSWORD and restart the container."
         )
         return
@@ -479,7 +547,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not allocations:
-        await update.message.reply_text("⚠️ No allocations found in signal.")
+        await _send_with_retry(update.message.reply_text, "⚠️ No allocations found in signal.")
         return
 
     if _is_same_signal(allocations, signal_time):
@@ -531,7 +599,8 @@ async def _alert_price_rate_limit(context: ContextTypes.DEFAULT_TYPE, error: Exc
         return
     _price_rate_limit_alerted_at = now
     logger.warning("CoinGecko rate-limited: %s", error)
-    await context.bot.send_message(
+    await _send_with_retry(
+        context.bot.send_message,
         chat_id=CHAT_ID,
         text="⏳ *CoinGecko rate-limited* — price fetches failing. Will retry next poll.",
         parse_mode="Markdown",
@@ -568,7 +637,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _poll_failure_count += 1
         _last_poll_status = f"rate-limited; cooldown until {_rate_limit_until:%H:%M UTC}"
         logger.warning("poll_signal: %s — cooling down until %s", error, _rate_limit_until)
-        await context.bot.send_message(
+        await _send_with_retry(
+            context.bot.send_message,
             chat_id=CHAT_ID,
             text=(
                 f"⏳ *TRW rate-limited* — pausing scrape for "
@@ -582,7 +652,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _poll_failure_count += 1
         _last_poll_status = "paused (invalid credentials)"
         logger.error("poll_signal: %s — pausing scrape until restart", error)
-        await context.bot.send_message(
+        await _send_with_retry(
+            context.bot.send_message,
             chat_id=CHAT_ID,
             text=(
                 "🔐 *TRW rejected credentials* — scrape paused.\n"
@@ -600,7 +671,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             _scrape_failure_count, error, exc_info=True,
         )
         if _scrape_failure_count == SCRAPE_FAILURE_ALERT_THRESHOLD:
-            await context.bot.send_message(
+            await _send_with_retry(
+                context.bot.send_message,
                 chat_id=CHAT_ID,
                 text=(
                     f"⚠️ *TRW scrape failing* — {_scrape_failure_count} consecutive errors.\n"
@@ -611,7 +683,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if _scrape_failure_count >= SCRAPE_FAILURE_ALERT_THRESHOLD:
-        await context.bot.send_message(
+        await _send_with_retry(
+            context.bot.send_message,
             chat_id=CHAT_ID,
             text="✅ TRW scrape recovered.",
             parse_mode="Markdown",
@@ -633,7 +706,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     _apply_allocations(allocations)
     _last_poll_status = "new signal detected"
 
-    await context.bot.send_message(
+    await _send_with_retry(
+        context.bot.send_message,
         chat_id=CHAT_ID,
         text=f"🆕 *New RSPS Signal detected*\n\n{_format_signal_message(allocations, signal_time)}",
         parse_mode="Markdown",
@@ -647,7 +721,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if not portfolio.send_rebalance:
         _last_poll_status = "new signal applied (within drift threshold)"
-        await context.bot.send_message(
+        await _send_with_retry(
+            context.bot.send_message,
             chat_id=CHAT_ID,
             text=f"✅ Allocations within 3% drift — skipping rebalance.\n\n{check_summary}",
             parse_mode="Markdown",
@@ -663,11 +738,15 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as error:
         logger.error("poll_signal rebalance failed: %s", error, exc_info=True)
         _last_poll_status = "rebalance failed"
-        await context.bot.send_message(
+        await _send_with_retry(
+            context.bot.send_message,
             chat_id=CHAT_ID,
             text="⚠️ Auto-rebalance failed. Check logs for details.",
             parse_mode="Markdown",
         )
         return
 
-    await context.bot.send_message(chat_id=CHAT_ID, text=format_message(result), parse_mode="Markdown")
+    await _send_with_retry(
+        context.bot.send_message,
+        chat_id=CHAT_ID, text=format_message(result), parse_mode="Markdown",
+    )

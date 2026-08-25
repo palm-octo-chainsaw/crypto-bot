@@ -38,6 +38,19 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /config
+      # ndots:5 is the cluster default, so every external name (api.telegram.org,
+      # api.binance.com, ...) is tried against all three search domains first —
+      # four lookups per host, each one a chance to time out on a weak link.
+      # External names carry enough dots to be used as-is with ndots:1, while
+      # bare service names ("postgres") still fall through to the search list.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "2"
       containers:
         - name: bot
           image: a77878123/crypto-bot:latest
@@ -45,6 +58,19 @@ spec:
           envFrom:
             - secretRef:
                 name: crypto-bot-secret
+          # The bot is a single asyncio loop. If it wedges, the process stays up
+          # and the container keeps reporting Running, so nothing restarts it —
+          # the heartbeat job stops stamping the file and this probe notices.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test $(( $(date +%s) - $(cat /tmp/heartbeat) )) -lt 300
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             - name: config
               mountPath: /app/config

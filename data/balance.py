@@ -100,10 +100,17 @@ class Balance:
     def _mark_degraded(self, venue: str) -> None:
         self._degraded.add(venue)
 
+    # web3 and krakenex both default to no request timeout, so a stalled socket
+    # blocks the caller forever. Every call here runs on the bot's single event
+    # loop: one hung read takes down command handling for the whole process.
+    HTTP_TIMEOUT_SECONDS = 10
+
     @property
     def w3(self) -> Web3:
         if self._w3 is None or not self._w3.is_connected():
-            self._w3 = Web3(Web3.HTTPProvider(self.ARBITRUM_RPC))
+            self._w3 = Web3(Web3.HTTPProvider(
+                self.ARBITRUM_RPC, request_kwargs={"timeout": self.HTTP_TIMEOUT_SECONDS}
+            ))
             if not self._w3.is_connected():
                 logger.warning("Unable to connect to Arbitrum RPC at %s", self.ARBITRUM_RPC)
                 self._mark_degraded(self.ARBITRUM)
@@ -241,7 +248,7 @@ class Balance:
             self._mark_degraded(self.KRAKEN)
             return {}
         try:
-            result = self.kraken_client.query_private("Balance")
+            result = self.kraken_client.query_private("Balance", timeout=self.HTTP_TIMEOUT_SECONDS)
             if result.get("error"):
                 logger.error("Kraken API error: %s", result['error'])
                 self._mark_degraded(self.KRAKEN)

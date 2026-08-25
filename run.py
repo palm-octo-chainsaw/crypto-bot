@@ -5,7 +5,9 @@ from utils.command_handlers import (
     post_init, post_stop, check, set_target,
     get_targets, get_total, get_spot_balance,
     get_leverage_balance, rebalance, fetch_signal, poll_signal, status, info,
-    performance, puller, SIGNAL_POLL_INTERVAL_SECONDS, SIGNAL_POLL_JOB_NAME,
+    performance, puller, error_handler, heartbeat,
+    SIGNAL_POLL_INTERVAL_SECONDS, SIGNAL_POLL_JOB_NAME,
+    HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_JOB_NAME,
 )
 
 
@@ -28,8 +30,16 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("performance", performance))
     app.add_handler(CommandHandler("puller", puller))
 
+    app.add_error_handler(error_handler)
+
     app.job_queue.run_repeating(
         poll_signal, interval=SIGNAL_POLL_INTERVAL_SECONDS, first=SIGNAL_POLL_INTERVAL_SECONDS, name=SIGNAL_POLL_JOB_NAME
+    )
+
+    # Runs on the same event loop the handlers use, so the file only stays fresh
+    # while that loop is actually processing work.
+    app.job_queue.run_repeating(
+        heartbeat, interval=HEARTBEAT_INTERVAL_SECONDS, first=0, name=HEARTBEAT_JOB_NAME
     )
 
     app.run_polling()
