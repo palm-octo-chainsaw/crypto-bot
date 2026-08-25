@@ -56,7 +56,12 @@ jobs:
         run: |
           sudo -n k3s kubectl -n default set image deployment/crypto-bot \
             bot=a77878123/crypto-bot:"$VERSION"
-          sudo -n k3s kubectl -n default rollout status deployment/crypto-bot --timeout=180s
+          # 180s was shorter than the pull it was waiting on: a cold-cache
+          # release ships ~600 MB to a node on Wi-Fi, which took 4m15s at v1.9.3
+          # and 8m40s at v1.9.0. The job went red on releases that deployed
+          # fine. warm-build-cache.yml should keep this in the seconds now, but
+          # the budget has to cover the day it misses.
+          sudo -n k3s kubectl -n default rollout status deployment/crypto-bot --timeout=900s
 
       - name: Verify container status
         env:
