@@ -41,8 +41,12 @@ jobs:
           tags: |
             a77878123/crypto-bot:${{ steps.version.outputs.value }}
             a77878123/crypto-bot:latest
+          # Read-only on purpose. Actions cache is scoped per git ref, so a
+          # `cache-to` here wrote ~570 MB into the tag's own scope that no other
+          # run could ever read — 1.7 GB of the 10 GB repo budget across three
+          # releases, all of it dead on arrival. warm-build-cache.yml is the
+          # only writer; every other build consumes what it left on master.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   deploy:
     needs: publish
