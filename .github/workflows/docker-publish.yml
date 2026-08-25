@@ -3,8 +3,6 @@ name: Docker Publish
 on:
   push:
     tags: ["v*.*.*"]
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       version:
@@ -13,8 +11,6 @@ on:
 
 jobs:
   publish:
-    # Skip PRs from forks: secrets aren't available to forked PR runs.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.value }}
@@ -24,15 +20,10 @@ jobs:
       - name: Resolve version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            echo "value=pr-${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
-            echo "extra_tag=" >> "$GITHUB_OUTPUT"
-          elif [ -n "${{ inputs.version }}" ]; then
+          if [ -n "${{ inputs.version }}" ]; then
             echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
           else
             echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "extra_tag=a77878123/crypto-bot:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: docker/setup-buildx-action@v3
@@ -49,7 +40,7 @@ jobs:
           build-args: VERSION=${{ steps.version.outputs.value }}
           tags: |
             a77878123/crypto-bot:${{ steps.version.outputs.value }}
-            ${{ steps.version.outputs.extra_tag }}
+            a77878123/crypto-bot:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
