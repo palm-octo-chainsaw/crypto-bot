@@ -82,8 +82,8 @@ async def heartbeat(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Stamp the liveness file from inside the event loop.
 
     A hung loop keeps the process alive and the container "Running", so nothing
-    outside can tell the bot stopped working. The probe in k8s/deployment.yaml
-    reads this file's age and restarts the pod once it goes stale.
+    outside can tell the bot stopped working. The liveness probe on the
+    Deployment reads this file's age and restarts the pod once it goes stale.
     """
     try:
         await asyncio.to_thread(_write_heartbeat)
