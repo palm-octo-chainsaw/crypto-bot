@@ -51,21 +51,63 @@ jobs:
   deploy:
     needs: publish
     if: github.event_name == 'push' && github.ref_type == 'tag'
+    # Hosted, not self-hosted: this only writes to git now, so a release no
+    # longer depends on the runner at home being awake.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: palm-octo-chainsaw/homelab-gitops
+          ref: master
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+
+      - name: Commit the image tag to the GitOps repo
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          F=manifests/crypto-bot/deployment.yaml
+          sed -i -E "s|(^ *image: a77878123/crypto-bot:).*|\1${VERSION}|" "$F"
+          grep -q "image: a77878123/crypto-bot:${VERSION}$" "$F" \
+            || { echo "::error::tag line not found in $F"; exit 1; }
+          # A re-run of an already-deployed tag is a no-op, not a failure.
+          if git diff --quiet "$F"; then
+            echo "already at ${VERSION}"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -qam "Deploy crypto-bot ${VERSION}"
+          git push
+
+  verify:
+    needs: [publish, deploy]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: self-hosted
     steps:
-      - name: Roll out new image to k8s
+      - name: Wait for ArgoCD to apply the new tag
         env:
           VERSION: ${{ needs.publish.outputs.version }}
           KUBECONFIG: /etc/rancher/k3s/k3s.yaml
         run: |
-          sudo -n k3s kubectl -n default set image deployment/crypto-bot \
-            bot=a77878123/crypto-bot:"$VERSION"
+          KC="sudo -n k3s kubectl"
+          # ArgoCD polls git on a 3-minute timer; this makes the deploy immediate
+          # instead of leaving the job idling through the next poll.
+          $KC -n argocd annotate application crypto-bot \
+            argocd.argoproj.io/refresh=normal --overwrite
+          want="a77878123/crypto-bot:${VERSION}"
+          deadline=$(( $(date +%s) + 600 ))
+          until [ "$($KC -n default get deploy crypto-bot \
+                     -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$want" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::ArgoCD did not apply $want within 10m"; exit 1
+            fi
+            sleep 10
+          done
           # 180s was shorter than the pull it was waiting on: a cold-cache
           # release ships ~600 MB to a node on Wi-Fi, which took 4m15s at v1.9.3
           # and 8m40s at v1.9.0. The job went red on releases that deployed
           # fine. warm-build-cache.yml should keep this in the seconds now, but
           # the budget has to cover the day it misses.
-          sudo -n k3s kubectl -n default rollout status deployment/crypto-bot --timeout=900s
+          $KC -n default rollout status deployment/crypto-bot --timeout=900s
 
       - name: Verify container status
         env:

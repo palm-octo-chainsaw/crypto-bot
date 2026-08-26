@@ -101,6 +101,21 @@ docker build -t crypto-telegram-bot .
 docker run --env-file .env crypto-telegram-bot
 ```
 
+## Deployment
+
+The bot runs on k3s as a single-replica Deployment. Its manifests are **not in
+this repo** — the cluster is reconciled by ArgoCD from
+[palm-octo-chainsaw/homelab-gitops](https://github.com/palm-octo-chainsaw/homelab-gitops),
+under `manifests/crypto-bot/`. `secret.example.yaml` there documents every
+environment variable the bot expects.
+
+A `v*.*.*` tag push builds the image, commits the new tag into that repo, and
+ArgoCD rolls it out; CI then waits for the rollout and fails the release if the
+bot does not come up. Nothing runs `kubectl set image` any more.
+
+`scripts/migrate_sqlite_to_pg.py` is retained from the one-time SQLite →
+Postgres cutover; the procedure it belonged to is in this repo's git history.
+
 ## Telegram Commands
 
 | Command | Description |
