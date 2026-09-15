@@ -27,6 +27,9 @@ def setup_logging(level: str) -> Logger:
             logging.StreamHandler()
         ]
     )
+    # httpx logs every request line at INFO, URL included — which puts the bot
+    # token in the log on every getUpdates poll.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     return logger
 
 
