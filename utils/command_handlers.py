@@ -501,6 +501,35 @@ def _is_same_signal(allocations: dict, signal_time: str | None) -> bool:
     return True
 
 
+def _parse_signal_time(value: str | None) -> tuple[datetime, bool] | None:
+    """Parse a scraped signal timestamp into (posted-at, has time of day)."""
+    if not value:
+        return None
+    for fmt, has_time in (("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False)):
+        try:
+            return datetime.strptime(value, fmt), has_time
+        except ValueError:
+            continue
+    return None
+
+
+def _is_older_signal(signal_time: str | None, last_ts: str | None) -> bool:
+    """True when the scraped signal was posted before the one we already hold.
+
+    A scrape of a page still showing old history returns an older signal with a
+    real timestamp, and its allocations differ from ours, so it reads as new.
+    TRW shows only a date for messages older than yesterday; when either side
+    lacks a time of day, compare dates alone, so a same-day pair is never called
+    older. A timestamp that doesn't parse can't be ordered and isn't either.
+    """
+    new, last = _parse_signal_time(signal_time), _parse_signal_time(last_ts)
+    if new is None or last is None:
+        return False
+    if new[1] and last[1]:
+        return new[0] < last[0]
+    return new[0].date() < last[0].date()
+
+
 def _apply_allocations(allocations: dict) -> None:
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
@@ -572,6 +601,16 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, f"ℹ️ Signal unchanged — {detail}.", formatted=False)
         return
 
+    last_ts = get_latest_message_timestamp()
+    if _is_older_signal(signal_time, last_ts):
+        logger.warning("fetch_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
+        await _reply(
+            update,
+            f"⚠️ Scraped signal ({signal_time}) is older than the current one ({last_ts}) — ignoring. Try again.",
+            formatted=False,
+        )
+        return
+
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     await _reply(update, _format_signal_message(allocations, signal_time))
@@ -622,6 +661,18 @@ async def _alert_price_rate_limit(context: ContextTypes.DEFAULT_TYPE, error: Exc
         text="⏳ *CoinGecko rate-limited* — price fetches failing. Will retry next poll.",
         parse_mode="Markdown",
     )
+
+
+def _poll_skip_status(allocations: dict, signal_time: str | None) -> str | None:
+    """Poll status explaining why this scrape isn't applied, or None for a new signal."""
+    if _is_same_signal(allocations, signal_time):
+        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
+        return f"unchanged (timestamp {signal_time})"
+    last_ts = get_latest_message_timestamp()
+    if _is_older_signal(signal_time, last_ts):
+        logger.warning("poll_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
+        return f"ignored older signal ({signal_time})"
+    return None
 
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -713,9 +764,9 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "no allocations parsed"
         return
 
-    if _is_same_signal(allocations, signal_time):
-        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
-        _last_poll_status = f"unchanged (timestamp {signal_time})"
+    skip_status = _poll_skip_status(allocations, signal_time)
+    if skip_status:
+        _last_poll_status = skip_status
         return
 
     logger.info("poll_signal: new signal detected (timestamp %s), applying and rebalancing", signal_time)

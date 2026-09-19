@@ -38,6 +38,7 @@ SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
 DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
+BANNER_WAIT_MS = 20000
 
 
 def parse_signal(text: str) -> dict[str, float]:
@@ -389,15 +390,23 @@ async def _open_channel(p, *, save_session: bool = True):
 
 
 async def _jump_to_latest(page) -> None:
-    """Click 'Viewing older messages' banner if present to jump to the latest messages."""
-    btn = page.get_by_text("Viewing older messages", exact=False)
-    if await btn.count() > 0:
-        logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
-        # Chat input overlay can intercept pointer events; force the click past it.
-        await btn.first.click(force=True)
-        await page.wait_for_timeout(5000)
-    else:
-        logger.info("[TRW] Already viewing latest messages")
+    """Click 'Viewing older messages' banner if present to jump to the latest messages.
+
+    The channel can open on old history before the banner renders. A one-shot
+    check on a slow load finds no banner, reads the old history as the latest,
+    and returns a stale signal, so wait for the banner before concluding.
+    """
+    btn = page.get_by_text("Viewing older messages", exact=False).first
+    try:
+        await btn.wait_for(state="visible", timeout=BANNER_WAIT_MS)
+    except PwTimeout:
+        logger.info("[TRW] No 'Viewing older messages' banner after %ds — assuming latest",
+                    BANNER_WAIT_MS // 1000)
+        return
+    logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
+    # Chat input overlay can intercept pointer events; force the click past it.
+    await btn.click(force=True)
+    await page.wait_for_timeout(5000)
 
 
 async def fetch_signal() -> tuple[dict[str, float], str | None]:

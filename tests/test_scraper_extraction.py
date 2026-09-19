@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta
 
 import pytest
+from playwright.async_api import TimeoutError as PwTimeout
 
 import data.scraper as scraper
 from data.scraper import parse_signal, _normalize_timestamp
@@ -19,7 +20,7 @@ class FakeHandle:
         self._on_click = on_click
         self.clicks = 0
 
-    async def wait_for(self, timeout=None): pass
+    async def wait_for(self, state=None, timeout=None): pass
 
     async def click(self, force=False, timeout=None):
         self.clicks += 1
@@ -29,6 +30,13 @@ class FakeHandle:
     async def fill(self, value): pass
     async def is_visible(self): return self._visible
     async def inner_text(self): return self._text
+
+
+class MissingHandle:
+    """What ``.first`` resolves to when nothing matches: waiting for it times out."""
+
+    async def wait_for(self, state=None, timeout=None):
+        raise PwTimeout(f"no element within {timeout}ms")
 
 
 class FakeLocator:
@@ -43,7 +51,7 @@ class FakeLocator:
 
     @property
     def first(self):
-        return self._handles[0]
+        return self._handles[0] if self._handles else MissingHandle()
 
     @property
     def last(self):
@@ -403,6 +411,29 @@ async def test_jump_to_latest_does_nothing_without_the_banner():
     await scraper._jump_to_latest(page)
 
     assert page.clicked == []
+
+
+@pytest.mark.asyncio
+async def test_jump_to_latest_waits_for_a_banner_that_renders_late():
+    """A slow load shows old history before the banner exists; waiting must still catch it."""
+    page = FakeChannelPage()
+    banner = FakeHandle(text="Viewing older messages",
+                        on_click=lambda: page.clicked.append("Viewing older messages"))
+    waits = []
+
+    class LateBanner(FakeLocator):
+        async def count(self):
+            return 0
+
+    async def render_while_waiting(state=None, timeout=None):
+        waits.append((state, timeout))
+    banner.wait_for = render_while_waiting
+    page.get_by_text = lambda text, exact=False: LateBanner(handles=[banner])
+
+    await scraper._jump_to_latest(page)
+
+    assert waits == [("visible", scraper.BANNER_WAIT_MS)]
+    assert page.clicked == ["Viewing older messages"]
 
 
 # --- _open_channel ---------------------------------------------------------
