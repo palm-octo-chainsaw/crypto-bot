@@ -663,6 +663,18 @@ async def _alert_price_rate_limit(context: ContextTypes.DEFAULT_TYPE, error: Exc
     )
 
 
+def _poll_skip_status(allocations: dict, signal_time: str | None) -> str | None:
+    """Poll status explaining why this scrape isn't applied, or None for a new signal."""
+    if _is_same_signal(allocations, signal_time):
+        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
+        return f"unchanged (timestamp {signal_time})"
+    last_ts = get_latest_message_timestamp()
+    if _is_older_signal(signal_time, last_ts):
+        logger.warning("poll_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
+        return f"ignored older signal ({signal_time})"
+    return None
+
+
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
     global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until, _credentials_invalid
@@ -752,15 +764,9 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "no allocations parsed"
         return
 
-    if _is_same_signal(allocations, signal_time):
-        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
-        _last_poll_status = f"unchanged (timestamp {signal_time})"
-        return
-
-    last_ts = get_latest_message_timestamp()
-    if _is_older_signal(signal_time, last_ts):
-        logger.warning("poll_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
-        _last_poll_status = f"ignored older signal ({signal_time})"
+    skip_status = _poll_skip_status(allocations, signal_time)
+    if skip_status:
+        _last_poll_status = skip_status
         return
 
     logger.info("poll_signal: new signal detected (timestamp %s), applying and rebalancing", signal_time)
