@@ -25,18 +25,16 @@ jobs:
       - name: Hand the event to Hermes
         env:
           HERMES_WEBHOOK_SECRET: ${{ secrets.HERMES_WEBHOOK_SECRET }}
-          # tailscale0 address of the gateway host; MagicDNS is not configured on runners.
-          HERMES_URL: http://100.89.14.18:8644/webhooks/github-pr-review
         run: |
           set -euo pipefail
-          body="$(cat "$GITHUB_EVENT_PATH")"
-          sig="sha256=$(printf '%s' "$body" \
-            | openssl dgst -sha256 -hmac "$HERMES_WEBHOOK_SECRET" -r \
-            | cut -d' ' -f1)"
+          # MagicDNS is not configured on the runner, so ask for the peer's address.
+          host="$(tailscale ip -4 archlinux)"
+          # The secret stays in the environment; an openssl argument would show up in ps.
+          sig="sha256=$(python3 -c 'import hashlib, hmac, os; print(hmac.new(os.environb[b"HERMES_WEBHOOK_SECRET"], open(os.environ["GITHUB_EVENT_PATH"], "rb").read(), hashlib.sha256).hexdigest())')"
           curl -sS --fail-with-body --max-time 30 \
-            -X POST "$HERMES_URL" \
+            -X POST "http://${host}:8644/webhooks/github-pr-review" \
             -H 'Content-Type: application/json' \
             -H 'X-GitHub-Event: pull_request' \
             -H "X-GitHub-Delivery: ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             -H "X-Hub-Signature-256: $sig" \
-            --data-binary "$body"
+            --data-binary @"$GITHUB_EVENT_PATH"
