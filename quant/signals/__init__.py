@@ -1,1 +1,1 @@
-"""Signal interfaces and stubs for the paper quant overlay."""
+"""Signal interfaces and momentum/vol scorer for the paper quant overlay."""

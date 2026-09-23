@@ -1,1 +1,1 @@
-"""Market data research helpers (OHLCV stubs for PR1)."""
+"""Market data research helpers (public OHLCV + fixtures)."""
