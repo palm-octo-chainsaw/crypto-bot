@@ -1,0 +1,42 @@
+name: Hermes PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# A new push supersedes the review still running for the previous head.
+concurrency:
+  group: hermes-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Forks cannot read the secrets this job needs, so skip them instead of failing.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join tailnet
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Hand the event to Hermes
+        env:
+          HERMES_WEBHOOK_SECRET: ${{ secrets.HERMES_WEBHOOK_SECRET }}
+          # tailscale0 address of the gateway host; MagicDNS is not configured on runners.
+          HERMES_URL: http://100.89.14.18:8644/webhooks/github-pr-review
+        run: |
+          set -euo pipefail
+          body="$(cat "$GITHUB_EVENT_PATH")"
+          sig="sha256=$(printf '%s' "$body" \
+            | openssl dgst -sha256 -hmac "$HERMES_WEBHOOK_SECRET" -r \
+            | cut -d' ' -f1)"
+          curl -sS --fail-with-body --max-time 30 \
+            -X POST "$HERMES_URL" \
+            -H 'Content-Type: application/json' \
+            -H 'X-GitHub-Event: pull_request' \
+            -H "X-GitHub-Delivery: ${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -H "X-Hub-Signature-256: $sig" \
+            --data-binary "$body"
