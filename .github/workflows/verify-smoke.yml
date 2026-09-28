@@ -97,7 +97,7 @@ jobs:
         run: |
           kubectl version
           kubectl auth can-i patch applications.argoproj.io/crypto-bot -n argocd
-          kubectl auth can-i get deployments -n default
+          kubectl auth can-i get deployments/crypto-bot -n default
           kubectl auth can-i get pods -n default
 
       # The tag is whatever is running now, so the wait below has nothing to
