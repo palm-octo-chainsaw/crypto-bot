@@ -306,6 +306,17 @@ async def test_extract_signal_reads_the_newest_matching_message():
 
 
 @pytest.mark.asyncio
+async def test_extract_signal_scans_the_oldest_of_the_newest_twenty():
+    """The 20th-newest message is inside the scan window, not skipped at its edge."""
+    page = FakeChannelPage(messages=[FakeMessage(body=SIGNAL, timestamp="04/07/2026")]
+                           + [FakeMessage(body="chatter") for _ in range(19)])
+
+    _, signal_time = await scraper._extract_signal(page)
+
+    assert signal_time == "2026-04-07", "found by the message scan, not the body fallback"
+
+
+@pytest.mark.asyncio
 async def test_extract_signal_falls_back_to_the_page_body():
     """When no message element matches, the raw body text still carries the signal."""
     page = FakeChannelPage(messages=[FakeMessage(body="chatter")],

@@ -274,7 +274,8 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     signal_text = None
     signal_time = None
     signal_element = None
-    for idx in range(count - 1, max(count - 20, -1), -1):
+    # The newest 20 messages; range()'s stop is exclusive.
+    for idx in range(count - 1, max(count - 21, -1), -1):
         element = messages.nth(idx)
         text = await _message_body_text(element)
         if SIGNAL_MARKER in text.lower():
