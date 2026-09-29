@@ -18,6 +18,8 @@ logger = setup_logging('info')
 STABLE = "USDC"
 REBALANCE_THRESHOLD_PCT = 3.0
 ERR_SIZE_BELOW_PRECISION = "size below precision"
+# Below a cent, a cross-matched leg counts as fully executed rather than leftover.
+MATCHED_USD = 0.01
 
 
 def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
@@ -277,11 +279,16 @@ class Portfolio:
                 sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
                 buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
                 free[sell_token] = free_amount - actual_sell
-                if buys[buy_token] * prices[buy_token] < cross_min:
+                # A remainder too small for another cross-trade stays in the plan, so
+                # the USDC route either trades it or reports it as dust; only a fully
+                # matched leg is removed.
+                if buys[buy_token] * prices[buy_token] < MATCHED_USD:
                     buys.pop(buy_token, None)
-                if sells[sell_token] * prices[sell_token] < cross_min:
+                if sells[sell_token] * prices[sell_token] < MATCHED_USD:
                     sells.pop(sell_token, None)
                     break  # this sell_token is done; move to the next
+                if sells[sell_token] * prices[sell_token] < cross_min:
+                    break  # nothing left of this sell_token that another cross could take
         return results
 
     def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:

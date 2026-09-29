@@ -167,6 +167,30 @@ def test_cross_pairs_skips_when_matched_value_is_below_the_venue_minimum():
     assert sells == {"ETH": 0.4} and buys == {"BTC": 0.0002}
 
 
+def test_cross_pairs_leaves_a_sub_minimum_remainder_for_usdc_routing():
+    """A $50 remainder under the $100 cross minimum is still owed a trade or a dust line.
+
+    It used to be popped from the plan, so it was never traded and never reported."""
+    ex = FakeExchange(
+        free={"ETH": 1.0},
+        markets={"ETH/BTC": {"limits": {"cost": {"min": 100.0}}}, "ETH/USDC": {}, "BTC/USDC": {}},
+    )
+    p = _portfolio({"ETH": 1.0})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+    sells, buys = {"ETH": 0.4}, {"BTC": 0.019}      # $1000 sell vs $950 buy
+
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert sells["ETH"] * prices["ETH"] == pytest.approx(50.0)
+    assert "BTC" not in buys, "the buy was fully matched"
+
+    sells, buys = {"ETH": 0.38}, {"BTC": 0.02}      # $950 sell vs $1000 buy
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert buys["BTC"] * prices["BTC"] == pytest.approx(50.0)
+    assert "ETH" not in sells, "the sell was fully matched"
+
+
 def test_cross_pairs_skips_when_nothing_is_free_to_sell():
     ex = FakeExchange(free={"ETH": 0.0}, markets={"ETH/BTC": {}})
     p = _portfolio({"ETH": 1.0})
