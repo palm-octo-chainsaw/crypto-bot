@@ -377,6 +377,31 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
     assert rows[0]["fee_amount"] == 0.5
 
 
+def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):
+    """P&L history needs what the order actually got, not the rebalance-time quote."""
+    monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 7)
+    rows = []
+    monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
+
+    _portfolio({})._persist_trades(
+        [
+            {"symbol": "ETH/USDC", "side": "sell", "amount": 1.0, "id": "a",
+             "average": 2490.0, "cost": 2490.0},
+            {"symbol": "BTC/USDC", "side": "buy", "amount": 0.0099, "id": "b",
+             "average": 50_500.0, "cost": 500.0},
+            {"symbol": "ETH/BTC", "side": "sell", "amount": 0.4, "id": "c",
+             "average": 0.05, "cost": 0.02},
+        ],
+        {"ETH": 2500.0, "BTC": 50_000.0},
+    )
+
+    assert [(r["price"], r["usd_value"]) for r in rows] == [
+        (2490.0, 2490.0),
+        (50_500.0, 500.0),
+        (2500.0, pytest.approx(1000.0)),  # cross fill is in BTC; valued at the USD quote
+    ]
+
+
 def _hype_portfolio(monkeypatch, live_portfolio, holdings: dict, targets: dict):
     live_portfolio.portfolio = holdings
     live_portfolio.targets = targets

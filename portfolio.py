@@ -69,6 +69,24 @@ def _format_trade_line(trade: dict) -> str:
     return f"✅ {side} {qty} {symbol} — id: {trade.get('id', '?')}"
 
 
+def _trade_valuation(order: dict, prices: dict) -> tuple[float | None, float | None]:
+    """USD (price, value) of a filled order, from the fill where the venue reports it.
+
+    Against STABLE the fill's average price and cost are already USD. A cross-pair
+    fill is priced in its quote coin (ETH/BTC in BTC), so it falls back to the
+    rebalance-time USD price of the base.
+    """
+    base, _, quote = (order.get("symbol") or "").partition("/")
+    amount = order.get("amount") or 0
+    if quote == STABLE:
+        price = order.get("average") or order.get("price") or prices.get(base)
+        usd_value = order.get("cost") or (amount * price if price else None)
+    else:
+        price = prices.get(base)
+        usd_value = amount * price if price else None
+    return price, usd_value
+
+
 class Portfolio:
     def __init__(self):
         self.summary: Summary = Summary()
@@ -417,14 +435,18 @@ class Portfolio:
             status = _trade_status(trade)
             if status not in ("filled", "error"):
                 continue
-            token = (trade.get("symbol") or "").split("/")[0]
+            if status == "filled":
+                price, usd_value = _trade_valuation(trade, prices)
+            else:
+                # Nothing traded, so there is no fill to value.
+                price, usd_value = prices.get((trade.get("symbol") or "").split("/")[0]), None
             record_trade(
                 signal_id=signal_id,
                 symbol=trade.get("symbol") or "",
                 side=trade.get("side") or "",
                 amount=trade.get("amount", 0),
-                price=prices.get(token),
-                usd_value=trade.get("usd_value"),
+                price=price,
+                usd_value=usd_value,
                 status=status,
                 order_id=trade.get("id"),
                 dry_run=False,
