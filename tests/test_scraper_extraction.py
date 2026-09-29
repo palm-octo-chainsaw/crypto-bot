@@ -297,9 +297,9 @@ async def test_message_body_text_treats_non_html_nodes_as_empty():
 @pytest.mark.asyncio
 async def test_message_body_text_raises_other_read_failures():
     """Treating a real message as empty would let the scan return an older signal."""
+    detached = FakeMessage(body_raises=True, body_error="Element is detached from DOM")
     with pytest.raises(ValueError, match="detached"):
-        await scraper._message_body_text(
-            FakeMessage(body_raises=True, body_error="Element is detached from DOM"))
+        await scraper._message_body_text(detached)
 
 
 @pytest.mark.asyncio
