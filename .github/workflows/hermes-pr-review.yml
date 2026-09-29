@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
           for _ in $(seq 60); do
             status="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=SonarCloud%20Code%20Analysis" \
-              -q '.check_runs[0].status // "missing"')"
+              -q '.check_runs[0].status // "missing"')" || status=unreachable  # retry, don't fail
             if [ "$status" = completed ]; then
               echo "SonarCloud analysis done"
               exit 0
