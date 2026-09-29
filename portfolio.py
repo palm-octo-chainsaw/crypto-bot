@@ -538,7 +538,7 @@ class Portfolio:
             try:
                 results.extend(run())
             except Exception as err:
-                logger.error("Binance stage failed: %s", err, exc_info=True)
+                logger.exception("Binance stage failed: %s", err)
                 unattempted = _unattempted_legs(remaining, f"Binance error: {err}")
                 return results + unattempted, (
                     f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not "

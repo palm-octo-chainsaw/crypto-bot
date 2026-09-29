@@ -484,7 +484,7 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      formatted=False)
         return
     except Exception as error:
-        logger.error("rebalance failed: %s", error, exc_info=True)
+        logger.exception("rebalance failed: %s", error)
         # Past the LIVE notice, the user cannot tell from a generic error whether
         # orders went out before the failure.
         reply = LIVE_REBALANCE_ERROR_REPLY if live else GENERIC_ERROR_REPLY
