@@ -23,6 +23,8 @@ portfolio = Portfolio()
 
 TARGETS_FILE = "config/targets.json"
 GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
+LIVE_REBALANCE_ERROR_REPLY = ("⚠️ Live rebalance failed partway — some trades may already "
+                              "have executed. Check the logs and Binance before retrying.")
 
 SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 SIGNAL_POLL_JOB_NAME = "signal_poll"
@@ -474,7 +476,21 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             update.message.reply_text,
             "⚠️ *LIVE MODE* — executing real trades on Binance...", parse_mode="Markdown"
         )
-    await _reply(update, portfolio.execute_rebalance(dry_run=not live))
+    try:
+        result = portfolio.execute_rebalance(dry_run=not live)
+    except PriceRateLimitError as error:
+        logger.warning("rebalance: CoinGecko rate-limited: %s", error)
+        await _reply(update, "⏳ CoinGecko rate-limited — no trades placed. Try again shortly.",
+                     formatted=False)
+        return
+    except Exception as error:
+        logger.error("rebalance failed: %s", error, exc_info=True)
+        # Past the LIVE notice, the user cannot tell from a generic error whether
+        # orders went out before the failure.
+        reply = LIVE_REBALANCE_ERROR_REPLY if live else GENERIC_ERROR_REPLY
+        await _reply(update, reply, formatted=False)
+        return
+    await _reply(update, result)
 
 
 def _allocations_match(a: dict | None, b: dict | None, tol: float = 0.01) -> bool:
