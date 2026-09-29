@@ -14,7 +14,29 @@ jobs:
     # Forks cannot read the secrets this job needs, so skip them instead of failing.
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      checks: read
     steps:
+      # Hermes reads SonarCloud's findings for the PR, which only exist once the
+      # analysis has reported back. Without the wait, the review races the scan.
+      - name: Wait for SonarCloud
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 60); do
+            status="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=SonarCloud%20Code%20Analysis" \
+              -q '.check_runs[0].status // "missing"')"
+            if [ "$status" = completed ]; then
+              echo "SonarCloud analysis done"
+              exit 0
+            fi
+            sleep 15
+          done
+          # Review anyway: Hermes reports Sonar as unavailable rather than skipping the PR.
+          echo "::warning::SonarCloud did not report within 15 minutes (last status: ${status})"
+
       - name: Join tailnet
         uses: tailscale/github-action@v3
         with:
