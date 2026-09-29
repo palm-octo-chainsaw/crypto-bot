@@ -360,56 +360,67 @@ async def _is_logged_out(page) -> bool:
 
 
 async def _open_channel(p, *, save_session: bool = True):
-    """Open signal channel, handling login and device limits. Returns (browser, context, page)."""
+    """Open signal channel, handling login and device limits. Returns (browser, context, page).
+
+    The browser is the caller's to close only once this returns; on any failure
+    it is closed here, since the caller never receives it.
+    """
     session_path = os.path.abspath(SESSION_DIR)
     state_file = os.path.join(session_path, "state.json")
 
-    # Try reusing saved session first
-    if os.path.isfile(state_file):
-        logger.info("[TRW] Reusing saved session...")
+    browser = None
+    try:
+        # Try reusing saved session first
+        if os.path.isfile(state_file):
+            logger.info("[TRW] Reusing saved session...")
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                storage_state=state_file,
+                viewport={"width": 1280, "height": 900},
+                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
+
+            # Check if we're still logged in. A live session stays on the /chat/ route;
+            # an expired one redirects to the login form ("Log In To The Real World" with
+            # email/password inputs). Detect via several signals rather than one brittle
+            # text match — the prior "LOGIN TO YOUR ACCOUNT" string no longer matches the
+            # current login page, which left expired sessions undetected (0 messages found).
+            if await _is_logged_out(page):
+                logger.info("[TRW] Session expired, logging in again...")
+                await browser.close()
+                browser = None
+            else:
+                await _clear_device_limit(page)
+                return browser, context, page
+
+        # Fresh login
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            storage_state=state_file,
             viewport={"width": 1280, "height": 900},
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         )
         page = await context.new_page()
         await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(3000)
+        await _login(page)
 
-        # Check if we're still logged in. A live session stays on the /chat/ route;
-        # an expired one redirects to the login form ("Log In To The Real World" with
-        # email/password inputs). Detect via several signals rather than one brittle
-        # text match — the prior "LOGIN TO YOUR ACCOUNT" string no longer matches the
-        # current login page, which left expired sessions undetected (0 messages found).
-        if await _is_logged_out(page):
-            logger.info("[TRW] Session expired, logging in again...")
+        await _clear_device_limit(page)
+
+        # Save session for reuse
+        if save_session:
+            os.makedirs(session_path, exist_ok=True)
+            await context.storage_state(path=state_file)
+            logger.info("[TRW] Session saved to %s", session_path)
+
+        return browser, context, page
+    except BaseException:
+        if browser is not None:
             await browser.close()
-        else:
-            await _clear_device_limit(page)
-            return browser, context, page
-
-    # Fresh login
-    browser = await p.chromium.launch(headless=True)
-    context = await browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    )
-    page = await context.new_page()
-    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-    await _login(page)
-
-    await _clear_device_limit(page)
-
-    # Save session for reuse
-    if save_session:
-        os.makedirs(session_path, exist_ok=True)
-        await context.storage_state(path=state_file)
-        logger.info("[TRW] Session saved to %s", session_path)
-
-    return browser, context, page
+        raise
 
 
 async def _jump_to_latest(page) -> None:

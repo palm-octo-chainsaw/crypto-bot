@@ -552,6 +552,32 @@ async def test_open_channel_fails_when_the_device_limit_will_not_clear(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_open_channel_closes_the_browser_when_login_fails(monkeypatch, session_dir):
+    """fetch_signal never receives a browser from a failed open, so it cannot close it."""
+    async def rate_limited(page):
+        raise scraper.TRWRateLimitError("TRW login rate-limited")
+    monkeypatch.setattr(scraper, "_login", rate_limited)
+    playwright = FakePlaywright(FakeChannelPage())
+
+    with pytest.raises(scraper.TRWRateLimitError):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_open_channel_closes_the_browser_when_the_saved_session_fails(monkeypatch, session_dir):
+    _write_session(session_dir)
+    page = FakeChannelPage(goto_raises=PwTimeout("goto timed out"))
+    playwright = FakePlaywright(page)
+
+    with pytest.raises(PwTimeout):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].closed is True
+
+
+@pytest.mark.asyncio
 async def test_open_channel_can_skip_saving_the_session(monkeypatch, session_dir):
     monkeypatch.setattr(scraper, "_login", _async_recording([]))
     page = FakeChannelPage()
