@@ -1,6 +1,7 @@
 """Signal parsing, message extraction and channel/session handling in data/scraper."""
+import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from playwright.async_api import TimeoutError as PwTimeout
@@ -67,10 +68,12 @@ EMPTY = lambda: FakeLocator(handles=[])
 class FakeMessage:
     """A chat message element: body span plus an optional timestamp span."""
 
-    def __init__(self, body="", timestamp=None, body_raises=False):
+    def __init__(self, body="", timestamp=None, body_raises=False,
+                 body_error="Node is not an HTMLElement"):
         self._body = body
         self._timestamp = timestamp
         self._body_raises = body_raises
+        self._body_error = body_error
 
     def locator(self, selector):
         if "custom-break-words" in selector:
@@ -78,7 +81,7 @@ class FakeMessage:
                 raise_handle = FakeHandle()
 
                 async def boom():
-                    raise ValueError("Node is not an HTMLElement")
+                    raise ValueError(self._body_error)
                 raise_handle.inner_text = boom
                 return FakeLocator(handles=[raise_handle])
             return FakeLocator(handles=[FakeHandle(text=self._body)])
@@ -236,17 +239,17 @@ def test_parse_signal_reads_the_last_section_of_a_correction():
 # --- _normalize_timestamp --------------------------------------------------
 
 def test_normalize_timestamp_today():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Today at 3:09 AM") == f"{today} 03:09"
 
 
 def test_normalize_timestamp_yesterday():
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Yesterday at 11:30 PM") == f"{yesterday} 23:30"
 
 
 def test_normalize_timestamp_keeps_unparseable_time_of_day():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Today at noon") == f"{today} noon"
 
 
@@ -292,6 +295,14 @@ async def test_message_body_text_treats_non_html_nodes_as_empty():
 
 
 @pytest.mark.asyncio
+async def test_message_body_text_raises_other_read_failures():
+    """Treating a real message as empty would let the scan return an older signal."""
+    detached = FakeMessage(body_raises=True, body_error="Element is detached from DOM")
+    with pytest.raises(ValueError, match="detached"):
+        await scraper._message_body_text(detached)
+
+
+@pytest.mark.asyncio
 async def test_extract_signal_reads_the_newest_matching_message():
     page = FakeChannelPage(messages=[
         FakeMessage(body="RSPS Signal:\n90% BTC\n10% ETH", timestamp="04/06/2026"),
@@ -303,6 +314,17 @@ async def test_extract_signal_reads_the_newest_matching_message():
 
     assert allocations == {"BTC": 40.0, "ETH": 30.0, "USDC": 30.0}
     assert signal_time == "2026-04-07"
+
+
+@pytest.mark.asyncio
+async def test_extract_signal_scans_the_oldest_of_the_newest_twenty():
+    """The 20th-newest message is inside the scan window, not skipped at its edge."""
+    page = FakeChannelPage(messages=[FakeMessage(body=SIGNAL, timestamp="04/07/2026")]
+                           + [FakeMessage(body="chatter") for _ in range(19)])
+
+    _, signal_time = await scraper._extract_signal(page)
+
+    assert signal_time == "2026-04-07", "found by the message scan, not the body fallback"
 
 
 @pytest.mark.asyncio
@@ -353,19 +375,19 @@ async def test_handle_device_limit_logs_out_old_sessions():
 
     page = LogoutPage(texts={"Device Limit Reached": 1})
 
-    await scraper._handle_device_limit(page)
+    cleared = await scraper._handle_device_limit(page)
 
     # Five passes at the modal, then the close button.
     assert clicked.count("logout") == 5
     assert clicked[-1] == "close"
+    assert cleared is False, "the modal never went away"
 
 
 @pytest.mark.asyncio
 async def test_handle_device_limit_stops_when_the_modal_is_gone():
     page = FakeChannelPage(texts={})
 
-    await scraper._handle_device_limit(page)
-
+    assert await scraper._handle_device_limit(page) is True
     assert page.clicked == []
 
 
@@ -470,6 +492,17 @@ async def test_open_channel_reuses_a_live_session(monkeypatch, session_dir):
 
 
 @pytest.mark.asyncio
+async def test_open_channel_renders_the_page_in_utc_and_en_us(monkeypatch, session_dir):
+    """_normalize_timestamp reads "Today" and MM/DD/YYYY as UTC en-US."""
+    monkeypatch.setattr(scraper, "_login", _async_recording([]))
+
+    _, context, _ = await scraper._open_channel(FakePlaywright(FakeChannelPage()))
+
+    assert context.kwargs["timezone_id"] == "UTC"
+    assert context.kwargs["locale"] == "en-US"
+
+
+@pytest.mark.asyncio
 async def test_open_channel_relogs_in_when_the_session_expired(monkeypatch, session_dir):
     _write_session(session_dir)
     monkeypatch.setattr(scraper, "_is_logged_out", _async_returning(True))
@@ -492,7 +525,7 @@ async def test_open_channel_clears_a_device_limit_on_the_saved_session(monkeypat
     _write_session(session_dir)
     monkeypatch.setattr(scraper, "_is_logged_out", _async_returning(False))
     handled = []
-    monkeypatch.setattr(scraper, "_handle_device_limit", _async_recording(handled))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_dismissing(handled))
 
     page = FakeChannelPage(texts={"Device Limit Reached": 1})
 
@@ -506,13 +539,54 @@ async def test_open_channel_clears_a_device_limit_on_the_saved_session(monkeypat
 async def test_open_channel_clears_a_device_limit_after_a_fresh_login(monkeypatch, session_dir):
     monkeypatch.setattr(scraper, "_login", _async_recording([]))
     handled = []
-    monkeypatch.setattr(scraper, "_handle_device_limit", _async_recording(handled))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_dismissing(handled))
 
     page = FakeChannelPage(texts={"Device Limit Reached": 1})
 
     await scraper._open_channel(FakePlaywright(page))
 
     assert len(handled) == 1
+
+
+@pytest.mark.asyncio
+async def test_open_channel_fails_when_the_device_limit_will_not_clear(monkeypatch, session_dir):
+    """A stuck modal must fail loudly, and never be saved as a reusable session."""
+    monkeypatch.setattr(scraper, "_login", _async_recording([]))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_returning(False))
+    page = FakeChannelPage(texts={"Device Limit Reached": 1})
+    playwright = FakePlaywright(page)
+
+    with pytest.raises(RuntimeError, match="device limit"):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].contexts[0].saved_state_to is None
+    assert page.screenshots == [scraper.DEBUG_SCREENSHOT]
+
+
+@pytest.mark.asyncio
+async def test_open_channel_closes_the_browser_when_login_fails(monkeypatch, session_dir):
+    """fetch_signal never receives a browser from a failed open, so it cannot close it."""
+    async def rate_limited(page):
+        raise scraper.TRWRateLimitError("TRW login rate-limited")
+    monkeypatch.setattr(scraper, "_login", rate_limited)
+    playwright = FakePlaywright(FakeChannelPage())
+
+    with pytest.raises(scraper.TRWRateLimitError):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_open_channel_closes_the_browser_when_the_saved_session_fails(monkeypatch, session_dir):
+    _write_session(session_dir)
+    page = FakeChannelPage(goto_raises=PwTimeout("goto timed out"))
+    playwright = FakePlaywright(page)
+
+    with pytest.raises(PwTimeout):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].closed is True
 
 
 @pytest.mark.asyncio
@@ -562,6 +636,27 @@ async def test_fetch_signal_returns_allocations_and_closes_the_browser(monkeypat
     assert browser.closed is True
 
 
+@pytest.mark.asyncio
+async def test_fetch_signal_runs_one_scrape_at_a_time(monkeypatch):
+    """Concurrent scrapes would race each other's reads and writes of state.json."""
+    monkeypatch.setattr(scraper, "TRW_EMAIL", "test@example.com")
+    monkeypatch.setattr(scraper, "TRW_PASSWORD", "pw")
+    monkeypatch.setattr(scraper, "TRW_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
+    active, overlaps = [], []
+
+    async def scrape():
+        active.append(1)
+        overlaps.append(len(active))
+        await asyncio.sleep(0.01)
+        active.pop()
+        return {"BTC": 100.0}, None
+    monkeypatch.setattr(scraper, "_fetch_signal", scrape)
+
+    await asyncio.gather(scraper.fetch_signal(), scraper.fetch_signal())
+
+    assert overlaps == [1, 1]
+
+
 # --- helpers ---------------------------------------------------------------
 
 def _async_returning(value):
@@ -573,4 +668,13 @@ def _async_returning(value):
 def _async_recording(sink):
     async def _call(*args, **kwargs):
         sink.append(args)
+    return _call
+
+
+def _async_dismissing(sink):
+    """A _handle_device_limit stand-in that records the call and clears the modal."""
+    async def _call(page):
+        sink.append((page,))
+        page.texts.pop("Device Limit Reached", None)
+        return True
     return _call

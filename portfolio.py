@@ -18,6 +18,8 @@ logger = setup_logging('info')
 STABLE = "USDC"
 REBALANCE_THRESHOLD_PCT = 3.0
 ERR_SIZE_BELOW_PRECISION = "size below precision"
+# Below a cent, a cross-matched leg counts as fully executed rather than leftover.
+MATCHED_USD = 0.01
 
 
 def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
@@ -51,7 +53,7 @@ def _format_trade_line(trade: dict) -> str:
 
     if status == "manual":
         return (f"✋ MANUAL {side} {symbol} (${trade['usd_value']:.2f}) — "
-                f"no bot venue trades {symbol}, execute on Kraken")
+                f"no bot venue trades {symbol}, execute it manually")
     if status == "dust":
         return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${trade.get('min_usd', MIN_TRADE_USD):.2f} minimum"
     if status == "skipped":
@@ -65,6 +67,30 @@ def _format_trade_line(trade: dict) -> str:
     if status == "dry_run":
         return f"📋 {side} {qty} {symbol}"
     return f"✅ {side} {qty} {symbol} — id: {trade.get('id', '?')}"
+
+
+def _trade_valuation(order: dict, prices: dict) -> tuple[float | None, float | None]:
+    """USD (price, value) of a filled order, from the fill where the venue reports it.
+
+    Against STABLE the fill's average price and cost are already USD. A cross-pair
+    fill is priced in its quote coin (ETH/BTC in BTC), so it falls back to the
+    rebalance-time USD price of the base.
+    """
+    base, _, quote = (order.get("symbol") or "").partition("/")
+    amount = order.get("amount") or 0
+    if quote == STABLE:
+        price = order.get("average") or order.get("price") or prices.get(base)
+        usd_value = order.get("cost") or (amount * price if price else None)
+    else:
+        price = prices.get(base)
+        usd_value = amount * price if price else None
+    return price, usd_value
+
+
+def _unattempted_legs(legs, reason: str) -> list:
+    return [{"symbol": f"{token}/{STABLE}", "side": side, "amount": amount, "error": reason}
+            for side, planned in legs
+            for token, amount in planned.items()]
 
 
 class Portfolio:
@@ -277,11 +303,16 @@ class Portfolio:
                 sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
                 buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
                 free[sell_token] = free_amount - actual_sell
-                if buys[buy_token] * prices[buy_token] < cross_min:
+                # A remainder too small for another cross-trade stays in the plan, so
+                # the USDC route either trades it or reports it as dust; only a fully
+                # matched leg is removed.
+                if buys[buy_token] * prices[buy_token] < MATCHED_USD:
                     buys.pop(buy_token, None)
-                if sells[sell_token] * prices[sell_token] < cross_min:
+                if sells[sell_token] * prices[sell_token] < MATCHED_USD:
                     sells.pop(sell_token, None)
                     break  # this sell_token is done; move to the next
+                if sells[sell_token] * prices[sell_token] < cross_min:
+                    break  # nothing left of this sell_token that another cross could take
         return results
 
     def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:
@@ -410,14 +441,18 @@ class Portfolio:
             status = _trade_status(trade)
             if status not in ("filled", "error"):
                 continue
-            token = (trade.get("symbol") or "").split("/")[0]
+            if status == "filled":
+                price, usd_value = _trade_valuation(trade, prices)
+            else:
+                # Nothing traded, so there is no fill to value.
+                price, usd_value = prices.get((trade.get("symbol") or "").split("/")[0]), None
             record_trade(
                 signal_id=signal_id,
                 symbol=trade.get("symbol") or "",
                 side=trade.get("side") or "",
                 amount=trade.get("amount", 0),
-                price=prices.get(token),
-                usd_value=trade.get("usd_value"),
+                price=price,
+                usd_value=usd_value,
                 status=status,
                 order_id=trade.get("id"),
                 dry_run=False,
@@ -438,6 +473,14 @@ class Portfolio:
             venues = ", ".join(sorted(self.balance.degraded))
             logger.error("Refusing to rebalance: balances degraded (%s)", venues)
             return f"⚠️ Balance fetch failed ({venues}) — refusing to trade on incomplete holdings."
+
+        missing = sorted(set(self.portfolio) - set(self.targets))
+        if missing:
+            # A tracked symbol with no target would raise KeyError mid-plan; treating
+            # it as 0% instead would sell the whole position on a config typo.
+            logger.error("Refusing to rebalance: no target for %s", ", ".join(missing))
+            return (f"⚠️ No target set for {', '.join(missing)} in config/targets.json "
+                    f"— refusing to rebalance.")
 
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
@@ -474,16 +517,29 @@ class Portfolio:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
         except Exception as err:
             logger.error("Failed to connect to Binance: %s", err)
-            unattempted = [
-                {"symbol": f"{token}/{STABLE}", "side": side, "amount": amount,
-                 "error": f"Binance unreachable: {err}"}
-                for side, legs in (("sell", sells), ("buy", buys))
-                for token, amount in legs.items()
-            ]
+            unattempted = _unattempted_legs((("sell", sells), ("buy", buys)),
+                                            f"Binance unreachable: {err}")
             return unattempted, (f"⚠️ Failed to connect to Binance — "
                                  f"{len(unattempted)} leg(s) not attempted. Check logs for details.")
 
-        results = self._execute_cross_pairs(exchange, sells, buys, prices, dry_run)
-        results.extend(self._execute_sells(exchange, sells, prices, dry_run))
-        results.extend(self._execute_buys(exchange, buys, prices, dry_run))
+        # Each stage opens with a fetch_balance(). One that fails leaves the legs it
+        # and later stages would have traded unattempted, but the orders earlier
+        # stages already placed must still reach the results.
+        results = []
+        stages = (
+            (lambda: self._execute_cross_pairs(exchange, sells, buys, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_sells(exchange, sells, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_buys(exchange, buys, prices, dry_run),
+             (("buy", buys),)),
+        )
+        for run, remaining in stages:
+            try:
+                results.extend(run())
+            except Exception as err:
+                logger.exception("Binance stage failed: %s", err)
+                unattempted = _unattempted_legs(remaining, f"Binance error: {err}")
+                notice = f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not attempted. Check logs for details."
+                return results + unattempted, notice
         return results, None

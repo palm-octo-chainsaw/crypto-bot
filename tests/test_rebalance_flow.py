@@ -64,10 +64,12 @@ def test_trade_status_precedence():
     assert pf._trade_status({"id": "1"}) == "filled"
 
 
-def test_format_trade_line_manual_points_at_kraken():
+def test_format_trade_line_manual_names_no_exchange():
+    """MANUAL_ASSETS is operator-configured, so the line cannot know where to trade."""
     line = pf._format_trade_line({"symbol": "PAXG", "side": "sell", "usd_value": 42.0, "manual": True})
     assert "MANUAL SELL PAXG ($42.00)" in line
-    assert "Kraken" in line
+    assert "execute it manually" in line
+    assert "Kraken" not in line
 
 
 def test_format_trade_line_dust_names_the_minimum():
@@ -163,6 +165,30 @@ def test_cross_pairs_skips_when_matched_value_is_below_the_venue_minimum():
 
     assert results == [] and ex.orders == []
     assert sells == {"ETH": 0.4} and buys == {"BTC": 0.0002}
+
+
+def test_cross_pairs_leaves_a_sub_minimum_remainder_for_usdc_routing():
+    """A $50 remainder under the $100 cross minimum is still owed a trade or a dust line.
+
+    It used to be popped from the plan, so it was never traded and never reported."""
+    ex = FakeExchange(
+        free={"ETH": 1.0},
+        markets={"ETH/BTC": {"limits": {"cost": {"min": 100.0}}}, "ETH/USDC": {}, "BTC/USDC": {}},
+    )
+    p = _portfolio({"ETH": 1.0})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+    sells, buys = {"ETH": 0.4}, {"BTC": 0.019}      # $1000 sell vs $950 buy
+
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert sells["ETH"] * prices["ETH"] == pytest.approx(50.0)
+    assert "BTC" not in buys, "the buy was fully matched"
+
+    sells, buys = {"ETH": 0.38}, {"BTC": 0.02}      # $950 sell vs $1000 buy
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert buys["BTC"] * prices["BTC"] == pytest.approx(50.0)
+    assert "ETH" not in sells, "the sell was fully matched"
 
 
 def test_cross_pairs_skips_when_nothing_is_free_to_sell():
@@ -351,6 +377,31 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
     assert rows[0]["fee_amount"] == 0.5
 
 
+def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):
+    """P&L history needs what the order actually got, not the rebalance-time quote."""
+    monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 7)
+    rows = []
+    monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
+
+    _portfolio({})._persist_trades(
+        [
+            {"symbol": "ETH/USDC", "side": "sell", "amount": 1.0, "id": "a",
+             "average": 2490.0, "cost": 2490.0},
+            {"symbol": "BTC/USDC", "side": "buy", "amount": 0.0099, "id": "b",
+             "average": 50_500.0, "cost": 500.0},
+            {"symbol": "ETH/BTC", "side": "sell", "amount": 0.4, "id": "c",
+             "average": 0.05, "cost": 0.02},
+        ],
+        {"ETH": 2500.0, "BTC": 50_000.0},
+    )
+
+    assert [(r["price"], r["usd_value"]) for r in rows] == [
+        (2490.0, 2490.0),
+        (50_500.0, 500.0),
+        (2500.0, pytest.approx(1000.0)),  # cross fill is in BTC; valued at the USD quote
+    ]
+
+
 def _hype_portfolio(monkeypatch, live_portfolio, holdings: dict, targets: dict):
     live_portfolio.portfolio = holdings
     live_portfolio.targets = targets
@@ -442,6 +493,15 @@ def test_execute_rebalance_refuses_on_degraded_balances(live_portfolio):
 
     assert "Balance fetch failed (kraken)" in out
     assert "refusing to trade" in out
+
+
+def test_execute_rebalance_names_a_symbol_missing_from_targets(live_portfolio):
+    live_portfolio.targets = {"USDC": 100.0}
+
+    out = live_portfolio.execute_rebalance(dry_run=True)
+
+    assert "No target set for BTC" in out
+    assert "refusing to rebalance" in out
 
 
 def test_execute_rebalance_reports_a_balanced_portfolio(monkeypatch, live_portfolio):
@@ -569,3 +629,31 @@ def test_cross_pairs_keeps_the_larger_buy_leg_for_usdc_routing():
 
     assert "ETH" not in sells, "the sell leg is fully consumed"
     assert buys["BTC"] * prices["BTC"] == pytest.approx(700.0, rel=1e-2)
+
+
+def test_binance_failure_mid_rebalance_keeps_the_orders_already_placed(monkeypatch):
+    """The cross-trade filled before fetch_balance failed; losing it would hide a real fill."""
+    class FlakyExchange(FakeExchange):
+        calls = 0
+
+        def fetch_balance(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("binance 503")
+            return super().fetch_balance()
+
+    ex = FlakyExchange(free={"ETH": 1.0, "USDC": 0.0},
+                       markets={"ETH/BTC": {}, "ETH/USDC": {}, "BTC/USDC": {}, "SOL/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+    p = _portfolio({})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0, "SOL": 200.0}
+
+    results, notice = p._execute_binance({"ETH": 0.4}, {"BTC": 0.012, "SOL": 2.0}, prices,
+                                         dry_run=False)
+
+    assert [o[0] for o in ex.orders] == ["ETH/BTC"]
+    assert results[0]["id"] == "ord1", "the placed cross-trade is reported"
+    assert [(r["symbol"], r["side"]) for r in results[1:]] == [("ETH/USDC", "sell"),
+                                                               ("SOL/USDC", "buy")]
+    assert all("binance 503" in r["error"] for r in results[1:])
+    assert "2 leg(s) not attempted" in notice

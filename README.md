@@ -190,7 +190,7 @@ Binance rejects undersized orders with `-1013`, and a flat local floor can't pre
 `MANUAL_ASSETS` (default `PAXG`) lists assets the portfolio tracks but no execution venue trades.
 PAXG balances are read from Kraken, yet Binance rejects PAXG orders with
 `-2010 "not permitted for this account"`, and the bot has no Kraken execution path — `krakenex` is
-read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade on Kraken by hand.
+read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade by hand (PAXG on Kraken).
 The sells funding them still run, so the USDC is waiting on Binance to be moved across.
 
 ## Signal Polling
