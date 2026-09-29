@@ -174,13 +174,19 @@ async def _login(page) -> None:
     await page.wait_for_timeout(5000)
 
 
-async def _handle_device_limit(page) -> None:
-    """Dismiss device-limit modal by logging out the oldest non-current sessions."""
+async def _device_limit_showing(page) -> bool:
+    return await page.get_by_text("Device Limit Reached", exact=False).count() > 0
+
+
+async def _handle_device_limit(page) -> bool:
+    """Dismiss device-limit modal by logging out the oldest non-current sessions.
+
+    Returns whether the modal is gone afterwards.
+    """
     logger.info("[TRW] Device limit modal detected — removing old sessions...")
 
     for _ in range(5):
-        modal = page.get_by_text("Device Limit Reached", exact=False)
-        if await modal.count() == 0:
+        if not await _device_limit_showing(page):
             break
 
         logout_btns = page.locator('button:has-text("Logout")')
@@ -197,11 +203,32 @@ async def _handle_device_limit(page) -> None:
     if await close_btn.count() > 0:
         try:
             await close_btn.first.click(force=True, timeout=3000)
-        except Exception:
-            pass
+        except Exception as err:
+            logger.warning("[TRW] Device limit close button click failed: %s", err)
     await page.wait_for_timeout(2000)
 
+    if await _device_limit_showing(page):
+        logger.warning("[TRW] Device limit modal still showing after cleanup")
+        return False
     logger.info("[TRW] Device limit resolved")
+    return True
+
+
+async def _clear_device_limit(page) -> None:
+    """Clear the device-limit modal if it is up, and reload the channel behind it.
+
+    Raises when the modal survives the reload: extraction would otherwise find
+    no messages and fail with an error that hides the cause, and a fresh login
+    would save the blocked session for the next run to reuse.
+    """
+    if not await _device_limit_showing(page):
+        return
+    await _handle_device_limit(page)
+    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(5000)
+    if await _device_limit_showing(page):
+        await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+        raise RuntimeError(f"TRW device limit modal would not clear. Check {DEBUG_SCREENSHOT}")
 
 
 def _normalize_timestamp(raw: str) -> str:
@@ -360,12 +387,7 @@ async def _open_channel(p, *, save_session: bool = True):
             logger.info("[TRW] Session expired, logging in again...")
             await browser.close()
         else:
-            # Handle device limit if it appears
-            device_limit = page.get_by_text("Device Limit Reached", exact=False)
-            if await device_limit.count() > 0:
-                await _handle_device_limit(page)
-                await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(5000)
+            await _clear_device_limit(page)
             return browser, context, page
 
     # Fresh login
@@ -379,12 +401,7 @@ async def _open_channel(p, *, save_session: bool = True):
     await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
     await _login(page)
 
-    # Handle device limit if it appears after login
-    device_limit = page.get_by_text("Device Limit Reached", exact=False)
-    if await device_limit.count() > 0:
-        await _handle_device_limit(page)
-        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(5000)
+    await _clear_device_limit(page)
 
     # Save session for reuse
     if save_session:

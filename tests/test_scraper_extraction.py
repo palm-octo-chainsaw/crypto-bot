@@ -374,19 +374,19 @@ async def test_handle_device_limit_logs_out_old_sessions():
 
     page = LogoutPage(texts={"Device Limit Reached": 1})
 
-    await scraper._handle_device_limit(page)
+    cleared = await scraper._handle_device_limit(page)
 
     # Five passes at the modal, then the close button.
     assert clicked.count("logout") == 5
     assert clicked[-1] == "close"
+    assert cleared is False, "the modal never went away"
 
 
 @pytest.mark.asyncio
 async def test_handle_device_limit_stops_when_the_modal_is_gone():
     page = FakeChannelPage(texts={})
 
-    await scraper._handle_device_limit(page)
-
+    assert await scraper._handle_device_limit(page) is True
     assert page.clicked == []
 
 
@@ -513,7 +513,7 @@ async def test_open_channel_clears_a_device_limit_on_the_saved_session(monkeypat
     _write_session(session_dir)
     monkeypatch.setattr(scraper, "_is_logged_out", _async_returning(False))
     handled = []
-    monkeypatch.setattr(scraper, "_handle_device_limit", _async_recording(handled))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_dismissing(handled))
 
     page = FakeChannelPage(texts={"Device Limit Reached": 1})
 
@@ -527,13 +527,28 @@ async def test_open_channel_clears_a_device_limit_on_the_saved_session(monkeypat
 async def test_open_channel_clears_a_device_limit_after_a_fresh_login(monkeypatch, session_dir):
     monkeypatch.setattr(scraper, "_login", _async_recording([]))
     handled = []
-    monkeypatch.setattr(scraper, "_handle_device_limit", _async_recording(handled))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_dismissing(handled))
 
     page = FakeChannelPage(texts={"Device Limit Reached": 1})
 
     await scraper._open_channel(FakePlaywright(page))
 
     assert len(handled) == 1
+
+
+@pytest.mark.asyncio
+async def test_open_channel_fails_when_the_device_limit_will_not_clear(monkeypatch, session_dir):
+    """A stuck modal must fail loudly, and never be saved as a reusable session."""
+    monkeypatch.setattr(scraper, "_login", _async_recording([]))
+    monkeypatch.setattr(scraper, "_handle_device_limit", _async_returning(False))
+    page = FakeChannelPage(texts={"Device Limit Reached": 1})
+    playwright = FakePlaywright(page)
+
+    with pytest.raises(RuntimeError, match="device limit"):
+        await scraper._open_channel(playwright)
+
+    assert playwright.chromium.browsers[0].contexts[0].saved_state_to is None
+    assert page.screenshots == [scraper.DEBUG_SCREENSHOT]
 
 
 @pytest.mark.asyncio
@@ -594,4 +609,13 @@ def _async_returning(value):
 def _async_recording(sink):
     async def _call(*args, **kwargs):
         sink.append(args)
+    return _call
+
+
+def _async_dismissing(sink):
+    """A _handle_device_limit stand-in that records the call and clears the modal."""
+    async def _call(page):
+        sink.append((page,))
+        page.texts.pop("Device Limit Reached", None)
+        return True
     return _call
