@@ -67,10 +67,12 @@ EMPTY = lambda: FakeLocator(handles=[])
 class FakeMessage:
     """A chat message element: body span plus an optional timestamp span."""
 
-    def __init__(self, body="", timestamp=None, body_raises=False):
+    def __init__(self, body="", timestamp=None, body_raises=False,
+                 body_error="Node is not an HTMLElement"):
         self._body = body
         self._timestamp = timestamp
         self._body_raises = body_raises
+        self._body_error = body_error
 
     def locator(self, selector):
         if "custom-break-words" in selector:
@@ -78,7 +80,7 @@ class FakeMessage:
                 raise_handle = FakeHandle()
 
                 async def boom():
-                    raise ValueError("Node is not an HTMLElement")
+                    raise ValueError(self._body_error)
                 raise_handle.inner_text = boom
                 return FakeLocator(handles=[raise_handle])
             return FakeLocator(handles=[FakeHandle(text=self._body)])
@@ -289,6 +291,14 @@ async def test_message_body_text_falls_back_to_the_element():
 async def test_message_body_text_treats_non_html_nodes_as_empty():
     """SVG icons match the message selector; inner_text raises on them."""
     assert await scraper._message_body_text(FakeMessage(body_raises=True)) == ""
+
+
+@pytest.mark.asyncio
+async def test_message_body_text_raises_other_read_failures():
+    """Treating a real message as empty would let the scan return an older signal."""
+    with pytest.raises(ValueError, match="detached"):
+        await scraper._message_body_text(
+            FakeMessage(body_raises=True, body_error="Element is detached from DOM"))
 
 
 @pytest.mark.asyncio

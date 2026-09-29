@@ -255,14 +255,19 @@ async def _message_body_text(element) -> str:
     contains "chat"/"message"), and ``inner_text`` raises "Node is not an
     HTMLElement" on those. Treat such nodes as empty so the scan continues to
     real messages instead of aborting the whole extraction.
+
+    Any other failure propagates: skipping a real message whose text could not
+    be read would let the scan walk on to an older, stale signal.
     """
     body = element.locator("span.custom-break-words")
     try:
         if await body.count() > 0:
             return await body.first.inner_text()
         return await element.inner_text()
-    except Exception:
-        return ""
+    except Exception as err:
+        if "not an HTMLElement" in str(err):
+            return ""
+        raise
 
 
 async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
