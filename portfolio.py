@@ -51,7 +51,7 @@ def _format_trade_line(trade: dict) -> str:
 
     if status == "manual":
         return (f"✋ MANUAL {side} {symbol} (${trade['usd_value']:.2f}) — "
-                f"no bot venue trades {symbol}, execute on Kraken")
+                f"no bot venue trades {symbol}, execute it manually")
     if status == "dust":
         return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${trade.get('min_usd', MIN_TRADE_USD):.2f} minimum"
     if status == "skipped":

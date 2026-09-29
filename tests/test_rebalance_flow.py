@@ -64,10 +64,12 @@ def test_trade_status_precedence():
     assert pf._trade_status({"id": "1"}) == "filled"
 
 
-def test_format_trade_line_manual_points_at_kraken():
+def test_format_trade_line_manual_names_no_exchange():
+    """MANUAL_ASSETS is operator-configured, so the line cannot know where to trade."""
     line = pf._format_trade_line({"symbol": "PAXG", "side": "sell", "usd_value": 42.0, "manual": True})
     assert "MANUAL SELL PAXG ($42.00)" in line
-    assert "Kraken" in line
+    assert "execute it manually" in line
+    assert "Kraken" not in line
 
 
 def test_format_trade_line_dust_names_the_minimum():

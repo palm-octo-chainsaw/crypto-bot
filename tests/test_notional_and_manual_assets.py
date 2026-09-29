@@ -126,13 +126,13 @@ def test_manual_asset_never_reaches_the_exchange_plan(monkeypatch):
     assert manual[0]["usd_value"] == pytest.approx(1650.0)
 
 
-def test_manual_asset_line_tells_user_where_to_trade():
+def test_manual_asset_line_tells_user_to_trade_by_hand():
     line = pf._format_trade_line(
         {"symbol": "PAXG", "side": "buy", "usd_value": 1650.0, "manual": True}
     )
     assert "MANUAL" in line
     assert "PAXG" in line
-    assert "Kraken" in line
+    assert "manually" in line
 
 
 def test_non_manual_assets_are_unaffected(monkeypatch):
