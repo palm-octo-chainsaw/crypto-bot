@@ -446,6 +446,15 @@ def test_execute_rebalance_refuses_on_degraded_balances(live_portfolio):
     assert "refusing to trade" in out
 
 
+def test_execute_rebalance_names_a_symbol_missing_from_targets(live_portfolio):
+    live_portfolio.targets = {"USDC": 100.0}
+
+    out = live_portfolio.execute_rebalance(dry_run=True)
+
+    assert "No target set for BTC" in out
+    assert "refusing to rebalance" in out
+
+
 def test_execute_rebalance_reports_a_balanced_portfolio(monkeypatch, live_portfolio):
     monkeypatch.setattr(pf, "REBALANCE_RESERVE_PCT", 0.0)  # holdings sit exactly on target
     assert live_portfolio.execute_rebalance(dry_run=True) == "✅ Portfolio is balanced — no trades needed."

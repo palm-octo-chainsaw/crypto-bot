@@ -439,6 +439,14 @@ class Portfolio:
             logger.error("Refusing to rebalance: balances degraded (%s)", venues)
             return f"⚠️ Balance fetch failed ({venues}) — refusing to trade on incomplete holdings."
 
+        missing = sorted(set(self.portfolio) - set(self.targets))
+        if missing:
+            # A tracked symbol with no target would raise KeyError mid-plan; treating
+            # it as 0% instead would sell the whole position on a config typo.
+            logger.error("Refusing to rebalance: no target for %s", ", ".join(missing))
+            return (f"⚠️ No target set for {', '.join(missing)} in config/targets.json "
+                    f"— refusing to rebalance.")
+
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
 
