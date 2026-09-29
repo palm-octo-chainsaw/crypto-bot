@@ -540,7 +540,6 @@ class Portfolio:
             except Exception as err:
                 logger.exception("Binance stage failed: %s", err)
                 unattempted = _unattempted_legs(remaining, f"Binance error: {err}")
-                notice = (f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not "
-                          f"attempted. Check logs for details.")
+                notice = f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not attempted. Check logs for details."
                 return results + unattempted, notice
         return results, None
