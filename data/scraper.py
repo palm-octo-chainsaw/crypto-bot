@@ -1,5 +1,6 @@
 """Scrape RSPS signal allocations from The Real World."""
 
+import asyncio
 import logging
 import os
 import re
@@ -39,6 +40,9 @@ DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
 DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
 BANNER_WAIT_MS = 20000
+# The scheduled poll and a manual /signal can scrape at once; both read and write
+# the saved session, so a read could load a half-written state.json.
+_SESSION_LOCK = asyncio.Lock()
 
 
 def parse_signal(text: str) -> dict[str, float]:
@@ -447,6 +451,11 @@ async def fetch_signal() -> tuple[dict[str, float], str | None]:
     if not all([TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET]):
         raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
 
+    async with _SESSION_LOCK:
+        return await _fetch_signal()
+
+
+async def _fetch_signal() -> tuple[dict[str, float], str | None]:
     browser = None
     page = None
     async with async_playwright() as p:

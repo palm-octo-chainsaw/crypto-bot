@@ -1,4 +1,5 @@
 """Signal parsing, message extraction and channel/session handling in data/scraper."""
+import asyncio
 import os
 from datetime import datetime, timedelta
 
@@ -622,6 +623,27 @@ async def test_fetch_signal_returns_allocations_and_closes_the_browser(monkeypat
     assert allocations == {"BTC": 40.0, "ETH": 30.0, "USDC": 30.0}
     assert signal_time == "2026-04-07"
     assert browser.closed is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_signal_runs_one_scrape_at_a_time(monkeypatch):
+    """Concurrent scrapes would race each other's reads and writes of state.json."""
+    monkeypatch.setattr(scraper, "TRW_EMAIL", "test@example.com")
+    monkeypatch.setattr(scraper, "TRW_PASSWORD", "pw")
+    monkeypatch.setattr(scraper, "TRW_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
+    active, overlaps = [], []
+
+    async def scrape():
+        active.append(1)
+        overlaps.append(len(active))
+        await asyncio.sleep(0.01)
+        active.pop()
+        return {"BTC": 100.0}, None
+    monkeypatch.setattr(scraper, "_fetch_signal", scrape)
+
+    await asyncio.gather(scraper.fetch_signal(), scraper.fetch_signal())
+
+    assert overlaps == [1, 1]
 
 
 # --- helpers ---------------------------------------------------------------
