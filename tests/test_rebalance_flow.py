@@ -629,3 +629,31 @@ def test_cross_pairs_keeps_the_larger_buy_leg_for_usdc_routing():
 
     assert "ETH" not in sells, "the sell leg is fully consumed"
     assert buys["BTC"] * prices["BTC"] == pytest.approx(700.0, rel=1e-2)
+
+
+def test_binance_failure_mid_rebalance_keeps_the_orders_already_placed(monkeypatch):
+    """The cross-trade filled before fetch_balance failed; losing it would hide a real fill."""
+    class FlakyExchange(FakeExchange):
+        calls = 0
+
+        def fetch_balance(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("binance 503")
+            return super().fetch_balance()
+
+    ex = FlakyExchange(free={"ETH": 1.0, "USDC": 0.0},
+                       markets={"ETH/BTC": {}, "ETH/USDC": {}, "BTC/USDC": {}, "SOL/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+    p = _portfolio({})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0, "SOL": 200.0}
+
+    results, notice = p._execute_binance({"ETH": 0.4}, {"BTC": 0.012, "SOL": 2.0}, prices,
+                                         dry_run=False)
+
+    assert [o[0] for o in ex.orders] == ["ETH/BTC"]
+    assert results[0]["id"] == "ord1", "the placed cross-trade is reported"
+    assert [(r["symbol"], r["side"]) for r in results[1:]] == [("ETH/USDC", "sell"),
+                                                               ("SOL/USDC", "buy")]
+    assert all("binance 503" in r["error"] for r in results[1:])
+    assert "2 leg(s) not attempted" in notice

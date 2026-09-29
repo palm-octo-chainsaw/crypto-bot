@@ -87,6 +87,12 @@ def _trade_valuation(order: dict, prices: dict) -> tuple[float | None, float | N
     return price, usd_value
 
 
+def _unattempted_legs(legs, reason: str) -> list:
+    return [{"symbol": f"{token}/{STABLE}", "side": side, "amount": amount, "error": reason}
+            for side, planned in legs
+            for token, amount in planned.items()]
+
+
 class Portfolio:
     def __init__(self):
         self.summary: Summary = Summary()
@@ -511,16 +517,30 @@ class Portfolio:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
         except Exception as err:
             logger.error("Failed to connect to Binance: %s", err)
-            unattempted = [
-                {"symbol": f"{token}/{STABLE}", "side": side, "amount": amount,
-                 "error": f"Binance unreachable: {err}"}
-                for side, legs in (("sell", sells), ("buy", buys))
-                for token, amount in legs.items()
-            ]
+            unattempted = _unattempted_legs((("sell", sells), ("buy", buys)),
+                                            f"Binance unreachable: {err}")
             return unattempted, (f"⚠️ Failed to connect to Binance — "
                                  f"{len(unattempted)} leg(s) not attempted. Check logs for details.")
 
-        results = self._execute_cross_pairs(exchange, sells, buys, prices, dry_run)
-        results.extend(self._execute_sells(exchange, sells, prices, dry_run))
-        results.extend(self._execute_buys(exchange, buys, prices, dry_run))
+        # Each stage opens with a fetch_balance(). One that fails leaves the legs it
+        # and later stages would have traded unattempted, but the orders earlier
+        # stages already placed must still reach the results.
+        results = []
+        stages = (
+            (lambda: self._execute_cross_pairs(exchange, sells, buys, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_sells(exchange, sells, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_buys(exchange, buys, prices, dry_run),
+             (("buy", buys),)),
+        )
+        for run, remaining in stages:
+            try:
+                results.extend(run())
+            except Exception as err:
+                logger.error("Binance stage failed: %s", err, exc_info=True)
+                unattempted = _unattempted_legs(remaining, f"Binance error: {err}")
+                return results + unattempted, (
+                    f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not "
+                    f"attempted. Check logs for details.")
         return results, None
