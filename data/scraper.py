@@ -5,7 +5,7 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
 import pyotp
 
@@ -40,6 +40,16 @@ DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
 DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
 BANNER_WAIT_MS = 20000
+# TRW renders message times in the browser's timezone and dates in its locale.
+# Pinning both keeps "Today at 3:09 AM" and "04/07/2026" parseable as UTC,
+# whatever the host is set to.
+BROWSER_CONTEXT = {
+    "viewport": {"width": 1280, "height": 900},
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "timezone_id": "UTC",
+    "locale": "en-US",
+}
 # The scheduled poll and a manual /signal can scrape at once; both read and write
 # the saved session, so a read could load a half-written state.json.
 _SESSION_LOCK = asyncio.Lock()
@@ -242,8 +252,10 @@ def _normalize_timestamp(raw: str) -> str:
         "Today at 3:09 AM"     -> "2026-04-18 03:09"
         "Yesterday at 11:30 PM" -> "2026-04-17 23:30"
         "04/07/2026"            -> "2026-04-07"
+
+    Relies on the browser rendering in UTC and en-US (see BROWSER_CONTEXT).
     """
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     lower = raw.lower().strip()
 
     # "Today at 3:09 AM" / "Yesterday at 11:30 PM"
@@ -378,12 +390,7 @@ async def _open_channel(p, *, save_session: bool = True):
         if os.path.isfile(state_file):
             logger.info("[TRW] Reusing saved session...")
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                storage_state=state_file,
-                viewport={"width": 1280, "height": 900},
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            )
+            context = await browser.new_context(storage_state=state_file, **BROWSER_CONTEXT)
             page = await context.new_page()
             await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
             await page.wait_for_timeout(3000)
@@ -403,11 +410,7 @@ async def _open_channel(p, *, save_session: bool = True):
 
         # Fresh login
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
+        context = await browser.new_context(**BROWSER_CONTEXT)
         page = await context.new_page()
         await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
         await _login(page)

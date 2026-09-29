@@ -1,7 +1,7 @@
 """Signal parsing, message extraction and channel/session handling in data/scraper."""
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from playwright.async_api import TimeoutError as PwTimeout
@@ -239,17 +239,17 @@ def test_parse_signal_reads_the_last_section_of_a_correction():
 # --- _normalize_timestamp --------------------------------------------------
 
 def test_normalize_timestamp_today():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Today at 3:09 AM") == f"{today} 03:09"
 
 
 def test_normalize_timestamp_yesterday():
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Yesterday at 11:30 PM") == f"{yesterday} 23:30"
 
 
 def test_normalize_timestamp_keeps_unparseable_time_of_day():
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     assert _normalize_timestamp("Today at noon") == f"{today} noon"
 
 
@@ -489,6 +489,17 @@ async def test_open_channel_reuses_a_live_session(monkeypatch, session_dir):
     assert browser.closed is False
     assert context.kwargs["storage_state"] == os.path.join(
         os.path.abspath(str(session_dir)), "state.json")
+
+
+@pytest.mark.asyncio
+async def test_open_channel_renders_the_page_in_utc_and_en_us(monkeypatch, session_dir):
+    """_normalize_timestamp reads "Today" and MM/DD/YYYY as UTC en-US."""
+    monkeypatch.setattr(scraper, "_login", _async_recording([]))
+
+    _, context, _ = await scraper._open_channel(FakePlaywright(FakeChannelPage()))
+
+    assert context.kwargs["timezone_id"] == "UTC"
+    assert context.kwargs["locale"] == "en-US"
 
 
 @pytest.mark.asyncio
