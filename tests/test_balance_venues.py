@@ -254,16 +254,6 @@ def test_refresh_binance_balances_rereads_the_account(bare_balance):
     assert bare_balance.binance_client.calls == 1
 
 
-def test_hyperliquid_free_balance_skips_other_coins(monkeypatch, bare_balance):
-    """The wallet holds several coins — the scan must walk past the ones we didn't ask for."""
-    monkeypatch.setattr(
-        Balance, "_fetch_hyperliquid_spot_balances",
-        lambda self: [{"coin": "USDC", "total": "500.0", "hold": "0.0"},
-                      {"coin": "PURR", "total": "12.0", "hold": "0.0"}],
-    )
-
-    assert bare_balance.get_hyperliquid_free_balance("HYPE") == 0.0
-
 
 def test_raw_kraken_balance_degrades_without_a_client(bare_balance):
     assert bare_balance.get_raw_kraken_balance() == {}

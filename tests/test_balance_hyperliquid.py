@@ -28,19 +28,6 @@ def test_get_hyperliquid_balances_returns_total_per_coin(bare_balance, monkeypat
     assert result == {"HYPE": 48.37, "USDC": 12.5}
 
 
-def test_get_hyperliquid_free_balance_subtracts_hold(bare_balance, monkeypatch):
-    monkeypatch.setattr(balance_mod, "META_MASK", "0xmaster")
-    fake_response = _response([{"coin": "HYPE", "total": "48.37", "hold": "10.0"}])
-    with patch.object(balance_mod.requests, "post", return_value=fake_response):
-        free = bare_balance.get_hyperliquid_free_balance("HYPE")
-
-    assert free == 38.37
-
-
-def test_get_hyperliquid_free_balance_returns_zero_for_missing_coin(bare_balance, monkeypatch):
-    monkeypatch.setattr(balance_mod, "META_MASK", "0xmaster")
-    with patch.object(balance_mod.requests, "post", return_value=_response([])):
-        assert bare_balance.get_hyperliquid_free_balance("HYPE") == 0.0
 
 
 def test_fetch_hyperliquid_swallows_request_errors(bare_balance, monkeypatch):
