@@ -1,15 +1,14 @@
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
 from data.trading import (
-    create_binance, create_hyperliquid, find_direct_pair, place_order,
-    place_market_buy_cost, apply_precision, effective_min_usd, HYPERLIQUID_SLIPPAGE,
+    create_binance, find_direct_pair, place_order,
+    place_market_buy_cost, apply_precision, effective_min_usd,
 )
 from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
 from constants import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
-    HYPERLIQUID_PRIVATE_KEY, HYPERLIQUID_ACCOUNT_ADDRESS, META_MASK,
     MIN_TRADE_USD, REBALANCE_RESERVE_PCT, MANUAL_ASSETS,
 )
 
@@ -427,50 +426,6 @@ class Portfolio:
                 fee_rate=trade.get("fee_rate"),
             )
 
-    HYPE_PAIR = "HYPE/USDC"
-
-    def _execute_hype(self, amount: float, side: str, prices: dict, dry_run: bool) -> list:
-        """Execute HYPE trade on Hyperliquid. Returns result dicts."""
-        if not HYPERLIQUID_PRIVATE_KEY or not HYPERLIQUID_ACCOUNT_ADDRESS:
-            logger.warning("Hyperliquid credentials not set — skipping HYPE trade")
-            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "skipped": True}]
-
-        try:
-            hl = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
-            hl.hyperliquid_user = META_MASK
-        except Exception as err:
-            logger.error("Failed to connect to Hyperliquid: %s", err)
-            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "error": str(err)}]
-
-        symbol = self.HYPE_PAIR
-        hype_price = prices.get("HYPE")
-        try:
-            trade_amount = abs(amount)
-            # ccxt fetch_balance queries the agent wallet (HYPERLIQUID_ACCOUNT_ADDRESS),
-            # which holds no funds. Query the master wallet (META_MASK) instead.
-            if side == "sell":
-                free_hype = self.balance.get_hyperliquid_free_balance("HYPE")
-                trade_amount = min(trade_amount, free_hype)
-            else:
-                # Hyperliquid is funded separately and the bot cannot move USDC to it,
-                # so a buy sized off the pooled portfolio is unaffordable here far more
-                # often than not. Cap it at what the wallet can actually pay, slippage
-                # headroom included, instead of posting an order the venue will reject.
-                free_stable = self.balance.get_hyperliquid_free_balance(STABLE)
-                if not hype_price:
-                    raise ValueError("no HYPE price available to size the buy")
-                affordable = free_stable / (hype_price * (1 + HYPERLIQUID_SLIPPAGE))
-                trade_amount = min(trade_amount, affordable)
-            trade_amount = apply_precision(hl, symbol, trade_amount)
-            if trade_amount <= 0:
-                logger.warning("HYPE %s size rounded to 0 — skipping", side)
-                return [{"symbol": symbol, "side": side, "amount": 0, "error": ERR_SIZE_BELOW_PRECISION}]
-            result = place_order(hl, symbol, side, trade_amount, dry_run, price=hype_price)
-            return [result]
-        except Exception as err:
-            logger.error("Hyperliquid HYPE trade error: %s", err)
-            return [{"symbol": symbol, "side": side, "amount": abs(amount), "error": str(err)}]
-
     def execute_rebalance(self, dry_run: bool = True) -> str:
         if not BINANCE_API_KEY or not BINANCE_API_SECRET:
             return "⚠️ Binance API credentials not set — cannot execute trades."
@@ -495,18 +450,8 @@ class Portfolio:
             return "✅ Portfolio is balanced — no trades needed."
 
         results = list(skipped)
-
-        # Execute HYPE on Hyperliquid first
-        if "HYPE" in sells:
-            results.extend(self._execute_hype(sells.pop("HYPE"), "sell", prices, dry_run))
-        if "HYPE" in buys:
-            results.extend(self._execute_hype(buys.pop("HYPE"), "buy", prices, dry_run))
-
-        # Execute remaining trades on Binance
-        notice = None
-        if sells or buys:
-            binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
-            results.extend(binance_results)
+        binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
+        results.extend(binance_results)
 
         if not dry_run:
             self._persist_trades(results, prices)
@@ -522,10 +467,8 @@ class Portfolio:
                          dry_run: bool) -> tuple[list, str | None]:
         """Run the Binance legs, returning (results, notice).
 
-        An unreachable Binance is reported per leg rather than by returning early: the
-        Hyperliquid orders above it may already have filled, and bailing out here skipped
-        _persist_trades entirely, dropping those fills from the trade history and from
-        the message the user sees.
+        An unreachable Binance is reported per leg rather than by returning early, so
+        every planned leg still reaches _persist_trades and the message the user sees.
         """
         try:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)

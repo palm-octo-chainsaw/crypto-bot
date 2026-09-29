@@ -65,8 +65,10 @@ class Balance:
     # counted there even if the account holds it: PAXG is deliberately Kraken-only
     # because Binance rejects PAXG orders (-2010), so crediting a Binance PAXG balance
     # would let the planner size a leg that venue will never fill.
-    BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB"})
+    BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB", "HYPE"})
     ARBITRUM_SYMBOLS = frozenset({"USDC", "ETH"})
+    # Read-only: the bot no longer trades here, but HYPE and USDC left on the wallet
+    # still count until moved, or the planner would read them as sold and rebuy.
     HYPERLIQUID_SYMBOLS = frozenset({"USDC", "HYPE"})
 
     LEVERAGE_TOKENS = {
@@ -261,13 +263,6 @@ class Balance:
     def get_hyperliquid_balances(self) -> dict:
         return {entry["coin"]: float(entry.get("total", 0.0))
                 for entry in self._fetch_hyperliquid_spot_balances()}
-
-    def get_hyperliquid_free_balance(self, coin: str) -> float:
-        """Free (sellable) balance = total - hold. `hold` is amount locked in open orders."""
-        for entry in self._fetch_hyperliquid_spot_balances():
-            if entry.get("coin") == coin:
-                return float(entry.get("total", 0.0)) - float(entry.get("hold", 0.0))
-        return 0.0
 
     def get_raw_kraken_balance(self) -> dict:
         if not self.kraken_client:
