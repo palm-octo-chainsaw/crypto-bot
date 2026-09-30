@@ -30,7 +30,6 @@ def _offline_venues():
     return (
         patch.object(Balance, "_arbitrum_usdc", return_value=0.0),
         patch.object(Balance, "_arbitrum_eth", return_value=0.0),
-        patch.object(Balance, "get_hyperliquid_balances", return_value={}),
     )
 
 
@@ -108,8 +107,8 @@ def test_binance_failure_survives_the_spot_balance_reset(bare_balance):
     bare_balance.refresh_binance_balances()
     assert bare_balance.degraded == {"binance"}
 
-    usdc, eth, hl = _offline_venues()
-    with usdc, eth, hl:
+    usdc, eth = _offline_venues()
+    with usdc, eth:
         bare_balance.get_spot_balance()
 
     assert bare_balance.degraded == {"binance"}
@@ -123,8 +122,8 @@ def test_degraded_clears_once_every_venue_answers_again(bare_balance):
     bare_balance.kraken_client.query_private.return_value = {"result": {}}
     bare_balance.refresh_binance_balances()
 
-    usdc, eth, hl = _offline_venues()
-    with usdc, eth, hl:
+    usdc, eth = _offline_venues()
+    with usdc, eth:
         bare_balance.get_spot_balance()
         assert bare_balance.degraded == {"binance"}
 
@@ -145,8 +144,8 @@ def test_absent_binance_credentials_count_as_degraded(bare_balance):
     bare_balance.kraken_client = MagicMock()
     bare_balance.kraken_client.query_private.return_value = {"result": {}}
 
-    usdc, eth, hl = _offline_venues()
-    with usdc, eth, hl:
+    usdc, eth = _offline_venues()
+    with usdc, eth:
         bare_balance.get_spot_balance()
 
     assert "binance" in bare_balance.degraded
@@ -156,8 +155,8 @@ def test_absent_kraken_credentials_count_as_degraded(bare_balance):
     bare_balance.binance_client = MagicMock()
     bare_balance.binance_client.get_account.return_value = {"balances": []}
 
-    usdc, eth, hl = _offline_venues()
-    with usdc, eth, hl:
+    usdc, eth = _offline_venues()
+    with usdc, eth:
         bare_balance.get_spot_balance()
 
     assert "kraken" in bare_balance.degraded
@@ -178,5 +177,5 @@ def test_missing_meta_mask_counts_as_degraded(bare_balance, monkeypatch):
     import data.balance as balance_mod
 
     monkeypatch.setattr(balance_mod, "META_MASK", "")
-    assert bare_balance._fetch_hyperliquid_spot_balances() == []
-    assert bare_balance.degraded == {"hyperliquid"}
+    assert bare_balance._arbitrum_eth() == 0.0
+    assert bare_balance.degraded == {"arbitrum"}

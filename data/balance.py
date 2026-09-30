@@ -53,10 +53,10 @@ class Balance:
 
     USDC_CONTRACT_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
 
-    ARBITRUM, BINANCE, HYPERLIQUID, KRAKEN = "arbitrum", "binance", "hyperliquid", "kraken"
+    ARBITRUM, BINANCE, KRAKEN = "arbitrum", "binance", "kraken"
     # Venues re-read on every get_venue_balances(). Binance is cached until an explicit
     # refresh, so its flag is owned by _load_binance_balances() instead.
-    LIVE_VENUES = frozenset({ARBITRUM, KRAKEN, HYPERLIQUID})
+    LIVE_VENUES = frozenset({ARBITRUM, KRAKEN})
 
     # Tracked symbols in report order; also the key set of the aggregate portfolio.
     TRACKED_SYMBOLS = ("BTC", "PAXG", "SOL", "SUI", "USDC",
@@ -67,9 +67,6 @@ class Balance:
     # would let the planner size a leg that venue will never fill.
     BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB", "HYPE"})
     ARBITRUM_SYMBOLS = frozenset({"USDC", "ETH"})
-    # Read-only: the bot no longer trades here, but HYPE and USDC left on the wallet
-    # still count until moved, or the planner would read them as sold and rebuy.
-    HYPERLIQUID_SYMBOLS = frozenset({"USDC", "HYPE"})
 
     LEVERAGE_TOKENS = {
         "BTCBULL2X": "0xe3254397f5D9C0B69917EBb49B49e103367B406f",
@@ -105,7 +102,7 @@ class Balance:
         $2.64 portfolio and turned a /performance baseline into +442,768%. Anything
         that stores or trades on these numbers has to consult this first.
 
-        A missing client counts as degraded: the bot holds assets on all four venues,
+        A missing client counts as degraded: the bot holds assets on all three venues,
         so absent credentials mean an incomplete read, not an empty wallet.
         """
         return set(self._degraded)
@@ -149,13 +146,11 @@ class Balance:
         if not self.binance_client:
             self._mark_degraded(self.BINANCE)
         kraken_raw = self.get_raw_kraken_balance()
-        hl = self.get_hyperliquid_balances()
 
         return {
             self.BINANCE: {s: self.get_binance_balance(s) for s in self.BINANCE_SYMBOLS},
             self.KRAKEN: {s: self._kraken_balance(s, kraken_raw) for s in self.KRAKEN_SYMBOL_MAP},
             self.ARBITRUM: {"USDC": self._arbitrum_usdc(), "ETH": self._arbitrum_eth()},
-            self.HYPERLIQUID: {s: hl.get(s, 0.0) for s in self.HYPERLIQUID_SYMBOLS},
         }
 
     @classmethod
@@ -243,26 +238,6 @@ class Balance:
             return 0.0
         self._load_binance_balances()
         return self._binance_balances.get(symbol.upper(), 0.0)
-
-    def _fetch_hyperliquid_spot_balances(self) -> list[dict]:
-        if not META_MASK:
-            logger.warning("META_MASK not set; Hyperliquid balances will be 0.")
-            self._mark_degraded(self.HYPERLIQUID)
-            return []
-        try:
-            url = "https://api.hyperliquid.xyz/info"
-            payload = {"type": "spotClearinghouseState", "user": META_MASK}
-            response = requests.post(url, json=payload, timeout=10)
-            response.raise_for_status()
-            return response.json().get("balances", [])
-        except Exception:
-            logger.exception("Error fetching balances from Hyperliquid")
-            self._mark_degraded(self.HYPERLIQUID)
-            return []
-
-    def get_hyperliquid_balances(self) -> dict:
-        return {entry["coin"]: float(entry.get("total", 0.0))
-                for entry in self._fetch_hyperliquid_spot_balances()}
 
     def get_raw_kraken_balance(self) -> dict:
         if not self.kraken_client:
