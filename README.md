@@ -49,6 +49,9 @@ Create a `.env` file:
 # Telegram
 BOT_TOKEN=your_telegram_bot_token
 CHAT_ID=your_chat_id
+# Who may run commands (optional, comma-separated Telegram user ids).
+# When set, these users can also use the bot in a private chat.
+ALLOWED_USER_IDS=123456789
 
 # EVM wallet (Arbitrum token balances + Hyperliquid spot)
 META_MASK=your_evm_wallet_address
