@@ -448,19 +448,19 @@ def test_execute_rebalance_buys_hype_on_binance_once_it_has_an_allocation(monkey
     assert cost == pytest.approx(500.0)
 
 
-def test_hype_left_on_hyperliquid_is_reported_not_traded(monkeypatch):
-    """Nothing moves coins between venues: a HYPE sell the Binance balance can't cover
-    names Hyperliquid as where the rest sits, and sends no order there."""
-    ex = FakeExchange(free={"HYPE": 0.0}, markets={"HYPE/USDC": {}})
-    p = _portfolio({"HYPE": 50.0})
-    p.venues = {"binance": {"HYPE": 0.0}, "hyperliquid": {"HYPE": 50.0}}
+def test_eth_left_on_arbitrum_is_reported_not_traded(monkeypatch):
+    """Nothing moves coins between venues: an ETH sell the Binance balance can't cover
+    names Arbitrum as where the rest sits, and sends no order there."""
+    ex = FakeExchange(free={"ETH": 0.0}, markets={"ETH/USDC": {}})
+    p = _portfolio({"ETH": 2.0})
+    p.venues = {"binance": {"ETH": 0.0}, "arbitrum": {"ETH": 2.0}}
 
-    results = p._execute_sells(ex, {"HYPE": 40.0}, {"HYPE": 48.0}, dry_run=False)
+    results = p._execute_sells(ex, {"ETH": 1.5}, {"ETH": 3000.0}, dry_run=False)
 
     assert ex.orders == []
     assert results[0]["error"] == "zero balance"
-    assert results[1]["held_on"] == "hyperliquid"
-    assert results[1]["amount"] == pytest.approx(40.0)
+    assert results[1]["held_on"] == "arbitrum"
+    assert results[1]["amount"] == pytest.approx(1.5)
 
 
 def test_binance_outage_records_every_planned_leg_including_hype(monkeypatch, live_portfolio):

@@ -4,7 +4,7 @@ A Telegram bot for tracking a multi-source crypto portfolio, executing rebalanci
 
 ## Features
 
-- **Multi-source balance aggregation** — combines on-chain wallets, Binance, Kraken, and Hyperliquid into a single portfolio view
+- **Multi-source balance aggregation** — combines on-chain wallets, Binance, and Kraken into a single portfolio view
 - **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance
 - **Signal scraping** — fetches RSPS signal allocations via headless browser with TOTP authentication, with timestamp-based deduplication
 - **Stale signal detection** — normalizes relative timestamps and auto-clicks "Viewing older messages" to ensure the latest signal is fetched
@@ -28,7 +28,7 @@ A Telegram bot for tracking a multi-source crypto portfolio, executing rebalanci
 | BNB | Binance |
 | USDC | Arbitrum (ERC-20) + Binance + Kraken |
 | PAXG | Kraken |
-| HYPE | Binance + Hyperliquid spot (balance only) |
+| HYPE | Binance |
 
 **Leverage tokens** (Arbitrum): `BTCBULL2X`, `BTCBULL4X`, `ETHBULL4X`
 
@@ -53,7 +53,7 @@ CHAT_ID=your_chat_id
 # When set, these users can also use the bot in a private chat.
 ALLOWED_USER_IDS=123456789
 
-# EVM wallet (Arbitrum token balances + Hyperliquid spot)
+# EVM wallet (Arbitrum token balances)
 META_MASK=your_evm_wallet_address
 
 # Binance (balance tracking + trade execution)
@@ -177,9 +177,9 @@ The bot computes the delta between each asset's current allocation and its targe
 
 `/rebalance` shows the exact trades needed. `/rebalance live` executes them as market orders:
 
-All assets are traded on Binance using available Binance USDC. Hyperliquid is read for
-balances only: HYPE or USDC still there counts toward the portfolio, and a leg that needs
-it is reported as sitting on Hyperliquid rather than traded.
+All assets are traded on Binance using available Binance USDC. Balances on Kraken or
+Arbitrum count toward the portfolio, but a leg that needs them is reported as sitting
+on that venue rather than traded.
 
 Sells execute before buys to free up USDC. Trade routing prefers direct pairs and falls back to routing through USDC.
 

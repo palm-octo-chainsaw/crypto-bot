@@ -54,12 +54,12 @@ def effective_min_usd(exchange, symbol: str, floor: float) -> float:
 def _restore_order_identity(order: dict, symbol: str, side: str) -> dict:
     """Fill in what the venue left out of its order response.
 
-    Hyperliquid answers a market order with the fill alone — `totalSz`, `avgPx`,
-    `oid` — and no coin or side, so ccxt parses `symbol` and `side` as None. That
-    reached Telegram as "✅ `23.33` None" and, worse, `_persist_trades` wrote the
-    row with an empty symbol and no price, leaving every HYPE fill unattributable
-    in the trade history. We asked for this order, so the request is the
-    authority on what it was; only fields the venue actually returned win.
+    Some venues answer a market order with the fill alone — no coin or side — so
+    ccxt parses `symbol` and `side` as None. That once reached Telegram as
+    "✅ `23.33` None" and, worse, `_persist_trades` wrote the row with an empty
+    symbol and no price, leaving those fills unattributable in the trade history.
+    We asked for this order, so the request is the authority on what it was; only
+    fields the venue actually returned win.
     """
     order["symbol"] = order.get("symbol") or symbol
     order["side"] = order.get("side") or side

@@ -55,7 +55,7 @@ def test_place_order_dry_run_places_nothing():
 
 
 def test_place_order_fills_in_venue_omissions():
-    """Hyperliquid answers with the fill alone — symbol/side/amount come from the request."""
+    """A venue that answers with the fill alone — symbol/side/amount come from the request."""
     ex = FakeExchange()
     ex.response = {"id": "hl1", "status": "closed", "symbol": None, "side": None, "fee": {}}
 
