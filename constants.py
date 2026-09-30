@@ -9,6 +9,11 @@ KRAKEN_API_KEY = getenv("KRAKEN_API_KEY")
 KRAKEN_API_SECRET = getenv("KRAKEN_API_SECRET")
 BOT_TOKEN = getenv("BOT_TOKEN", "")
 CHAT_ID = getenv("CHAT_ID")
+# Telegram user ids allowed to run commands, comma-separated. Empty means anyone
+# in CHAT_ID may; set it once CHAT_ID is a group whose members should not trade.
+ALLOWED_USER_IDS = frozenset(
+    int(uid) for uid in getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()
+)
 DATABASE_URL = getenv("DATABASE_URL", "")
 META_MASK = getenv("META_MASK", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"

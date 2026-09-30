@@ -1,6 +1,7 @@
 from telegram.ext import ApplicationBuilder, CommandHandler
 
-from constants import BOT_TOKEN
+from constants import BOT_TOKEN, CHAT_ID, ALLOWED_USER_IDS
+from utils.access import build_command_filter
 from utils.command_handlers import (
     post_init, post_stop, check, set_target,
     get_targets, get_total, get_spot_balance,
@@ -16,19 +17,20 @@ if __name__ == "__main__":
     init_db()
 
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    allowed = build_command_filter(CHAT_ID, ALLOWED_USER_IDS)
 
-    app.add_handler(CommandHandler("check", check))
-    app.add_handler(CommandHandler("balance", get_spot_balance))
-    app.add_handler(CommandHandler("leverage", get_leverage_balance))
-    app.add_handler(CommandHandler("get_targets", get_targets))
-    app.add_handler(CommandHandler("set_target", set_target))
-    app.add_handler(CommandHandler("total", get_total))
-    app.add_handler(CommandHandler("rebalance", rebalance))
-    app.add_handler(CommandHandler("fetch_signal", fetch_signal))
-    app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("info", info))
-    app.add_handler(CommandHandler("performance", performance))
-    app.add_handler(CommandHandler("puller", puller))
+    app.add_handler(CommandHandler("check", check, filters=allowed))
+    app.add_handler(CommandHandler("balance", get_spot_balance, filters=allowed))
+    app.add_handler(CommandHandler("leverage", get_leverage_balance, filters=allowed))
+    app.add_handler(CommandHandler("get_targets", get_targets, filters=allowed))
+    app.add_handler(CommandHandler("set_target", set_target, filters=allowed))
+    app.add_handler(CommandHandler("total", get_total, filters=allowed))
+    app.add_handler(CommandHandler("rebalance", rebalance, filters=allowed))
+    app.add_handler(CommandHandler("fetch_signal", fetch_signal, filters=allowed))
+    app.add_handler(CommandHandler("status", status, filters=allowed))
+    app.add_handler(CommandHandler("info", info, filters=allowed))
+    app.add_handler(CommandHandler("performance", performance, filters=allowed))
+    app.add_handler(CommandHandler("puller", puller, filters=allowed))
 
     app.add_error_handler(error_handler)
 
