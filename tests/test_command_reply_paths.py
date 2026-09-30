@@ -60,7 +60,8 @@ async def test_rebalance_live_failure_warns_that_trades_may_have_executed(
 
     await ch.rebalance(fake_update, fake_context)
 
-    assert fake_update.message.replies[-1] == ch.LIVE_REBALANCE_ERROR_REPLY
+    assert fake_update.message.replies[-1].startswith(ch.LIVE_REBALANCE_ERROR_REPLY)
+    assert "binance 503" in fake_update.message.replies[-1]
 
 
 @pytest.mark.asyncio
@@ -73,7 +74,9 @@ async def test_rebalance_dry_run_failure_replies_generically(monkeypatch, fake_u
 
     await ch.rebalance(fake_update, fake_context)
 
-    assert fake_update.message.replies == [ch.GENERIC_ERROR_REPLY]
+    assert len(fake_update.message.replies) == 1
+    assert fake_update.message.replies[0].startswith(ch.GENERIC_ERROR_REPLY)
+    assert "RuntimeError: binance 503" in fake_update.message.replies[0]
 
 
 @pytest.mark.asyncio

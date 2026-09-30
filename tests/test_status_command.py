@@ -185,7 +185,7 @@ async def test_performance_command_reports_generic_error(monkeypatch, fake_conte
 
     await ch.performance(update, fake_context)
 
-    assert _replies(update)[0] == ch.GENERIC_ERROR_REPLY
+    assert _replies(update)[0].startswith(ch.GENERIC_ERROR_REPLY)
 
 
 @pytest.mark.asyncio
@@ -207,7 +207,7 @@ async def test_info_command_reports_generic_error(monkeypatch, fake_context):
 
     await ch.info(update, fake_context)
 
-    assert _replies(update)[0] == ch.GENERIC_ERROR_REPLY
+    assert _replies(update)[0].startswith(ch.GENERIC_ERROR_REPLY)
 
 
 @pytest.mark.asyncio
@@ -273,7 +273,7 @@ async def test_get_total_reports_generic_error(fake_context, stub_portfolio):
 
     await ch.get_total(update, fake_context)
 
-    assert _replies(update)[0] == ch.GENERIC_ERROR_REPLY
+    assert _replies(update)[0].startswith(ch.GENERIC_ERROR_REPLY)
 
 
 @pytest.mark.asyncio
@@ -293,7 +293,7 @@ async def test_get_spot_balance_reports_generic_error(fake_context, stub_portfol
 
     await ch.get_spot_balance(update, fake_context)
 
-    assert _replies(update)[0] == ch.GENERIC_ERROR_REPLY
+    assert _replies(update)[0].startswith(ch.GENERIC_ERROR_REPLY)
 
 
 @pytest.mark.asyncio
@@ -313,7 +313,7 @@ async def test_get_leverage_balance_reports_generic_error(fake_context, stub_por
 
     await ch.get_leverage_balance(update, fake_context)
 
-    assert _replies(update)[0] == ch.GENERIC_ERROR_REPLY
+    assert _replies(update)[0].startswith(ch.GENERIC_ERROR_REPLY)
 
 
 def test_apply_allocations_zeroes_targets_absent_from_the_signal(monkeypatch, stub_portfolio):

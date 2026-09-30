@@ -1,7 +1,10 @@
 import asyncio
+import html
 import logging
 import os
+import traceback
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from telegram import Update, BotCommand
 from telegram.error import BadRequest, NetworkError, TelegramError
@@ -9,6 +12,7 @@ from telegram.ext import ContextTypes, ExtBot, Application
 
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
+import constants
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
 from data.prices import PriceRateLimitError
@@ -22,9 +26,15 @@ logger = logging.getLogger(__name__)
 portfolio = Portfolio()
 
 TARGETS_FILE = "config/targets.json"
-GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
+GENERIC_ERROR_REPLY = "⚠️ Something went wrong."
 LIVE_REBALANCE_ERROR_REPLY = ("⚠️ Live rebalance failed partway — some trades may already "
-                              "have executed. Check the logs and Binance before retrying.")
+                              "have executed. Check Binance before retrying.")
+FETCH_SIGNAL_ERROR_REPLY = "⚠️ Error fetching signal."
+AUTO_REBALANCE_ERROR_REPLY = "⚠️ Auto-rebalance failed."
+
+# Telegram rejects messages over 4096 characters; leave room for the headline.
+ERROR_DETAIL_MAX_CHARS = 3500
+REDACTED = "[redacted]"
 
 SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 SIGNAL_POLL_JOB_NAME = "signal_poll"
@@ -75,6 +85,50 @@ async def _send_with_retry(send, *args, **kwargs):
             await asyncio.sleep(delay)
 
 
+def _secret_values() -> list[str]:
+    """Credentials that must never reach the chat, longest first so a secret
+    containing another is replaced whole."""
+    values = [
+        constants.BINANCE_API_KEY, constants.BINANCE_API_SECRET,
+        constants.KRAKEN_API_KEY, constants.KRAKEN_API_SECRET,
+        constants.BOT_TOKEN, constants.DATABASE_URL, constants.META_MASK,
+        constants.TRW_PASSWORD, constants.TRW_TOTP_SECRET,
+    ]
+    if constants.DATABASE_URL:
+        values.append(urlsplit(constants.DATABASE_URL).password)
+    return sorted({v for v in values if v}, key=len, reverse=True)
+
+
+def _redact(text: str) -> str:
+    for secret in _secret_values():
+        text = text.replace(secret, REDACTED)
+    return text
+
+
+def format_error_reply(headline: str, error: BaseException) -> str:
+    """The headline plus the exception's traceback, as Telegram HTML.
+
+    Keeps the tail of the traceback when it is too long — the raising frame
+    and the exception message are what the reader needs.
+    """
+    detail = _redact("".join(traceback.format_exception(error)).rstrip())
+    limit = ERROR_DETAIL_MAX_CHARS
+    while True:
+        clipped = detail if len(detail) <= limit else "…" + detail[-limit:]
+        body = html.escape(clipped)
+        # Escaping can lengthen the text (& -> &amp;), so trim until it fits.
+        if len(body) <= ERROR_DETAIL_MAX_CHARS:
+            break
+        limit = limit * ERROR_DETAIL_MAX_CHARS // len(body)
+    return f"{html.escape(headline)}\n\n<pre>{body}</pre>"
+
+
+async def _reply_error(update: Update, headline: str, error: BaseException) -> None:
+    await _send_with_retry(
+        update.message.reply_text, format_error_reply(headline, error), parse_mode="HTML",
+    )
+
+
 def _write_heartbeat() -> None:
     with open(HEARTBEAT_FILE, "w") as file:
         file.write(str(int(datetime.now(timezone.utc).timestamp())))
@@ -107,7 +161,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         # would fail exactly the same way.
         return
     try:
-        await _send_with_retry(message.reply_text, GENERIC_ERROR_REPLY)
+        await _send_with_retry(
+            message.reply_text, format_error_reply(GENERIC_ERROR_REPLY, context.error), parse_mode="HTML",
+        )
     except TelegramError as err:
         logger.warning("Could not deliver the error notice: %s", err)
 
@@ -389,7 +445,7 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         message = _format_performance(arg)
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
 
@@ -399,7 +455,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = _format_info()
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
 
@@ -414,7 +470,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = portfolio.listener()
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _send_with_retry(update.message.reply_text, message, parse_mode="Markdown")
 
@@ -447,7 +503,7 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD")
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -457,7 +513,7 @@ async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _reply(update, "💰 *Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -466,7 +522,7 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
         await _reply(update, "📈 *Leverage Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -487,8 +543,8 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("rebalance failed: %s", error)
         # Past the LIVE notice, the user cannot tell from a generic error whether
         # orders went out before the failure.
-        reply = LIVE_REBALANCE_ERROR_REPLY if live else GENERIC_ERROR_REPLY
-        await _reply(update, reply, formatted=False)
+        headline = LIVE_REBALANCE_ERROR_REPLY if live else GENERIC_ERROR_REPLY
+        await _reply_error(update, headline, error)
         return
     await _reply(update, result)
 
@@ -605,7 +661,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     except Exception as error:
         logger.error("Failed to fetch signal: %s", error, exc_info=True)
-        await _reply(update, "⚠️ Error fetching signal. Check logs for details.", formatted=False)
+        await _reply_error(update, FETCH_SIGNAL_ERROR_REPLY, error)
         return
 
     if not allocations:
@@ -758,11 +814,12 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             await _send_with_retry(
                 context.bot.send_message,
                 chat_id=CHAT_ID,
-                text=(
-                    f"⚠️ *TRW scrape failing* — {_scrape_failure_count} consecutive errors.\n"
-                    f"Auto-rebalance is paused. Check logs or run /fetch_signal manually."
+                text=format_error_reply(
+                    f"⚠️ TRW scrape failing — {_scrape_failure_count} consecutive errors.\n"
+                    f"Auto-rebalance is paused. Run /fetch_signal manually once fixed.",
+                    error,
                 ),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         return
 
@@ -825,8 +882,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_with_retry(
             context.bot.send_message,
             chat_id=CHAT_ID,
-            text="⚠️ Auto-rebalance failed. Check logs for details.",
-            parse_mode="Markdown",
+            text=format_error_reply(AUTO_REBALANCE_ERROR_REPLY, error),
+            parse_mode="HTML",
         )
         return
 
