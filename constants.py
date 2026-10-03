@@ -52,6 +52,8 @@ SNAPSHOT_GATE_MIN_RATIO = min(max(float(getenv("SNAPSHOT_GATE_MIN_RATIO", "0.2")
 # Only apply that gate against a recent baseline, so a genuine collapse cannot
 # lock snapshots out forever: once the last clean row ages past this, writes resume.
 SNAPSHOT_GATE_MAX_AGE_HOURS = float(getenv("SNAPSHOT_GATE_MAX_AGE_HOURS", "48"))
+# Optional: new signals are also posted here. Empty disables Discord.
+DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL", "")
 TRW_EMAIL = getenv("TRW_EMAIL")
 TRW_PASSWORD = getenv("TRW_PASSWORD")
 TRW_TOTP_SECRET = getenv("TRW_TOTP_SECRET")

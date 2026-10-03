@@ -69,6 +69,9 @@ TRW_EMAIL=your_email
 TRW_PASSWORD=your_password
 TRW_TOTP_SECRET=your_totp_secret
 
+# Discord (optional) — new signals are also posted to this channel webhook
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
 # Trade settings (optional)
 MIN_TRADE_USD=1.0
 ```

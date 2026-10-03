@@ -10,6 +10,7 @@ from telegram import Update, BotCommand
 from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ContextTypes, ExtBot, Application
 
+from utils import discord
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
 import constants
@@ -54,6 +55,10 @@ _last_poll_status: str = "not yet run"
 _poll_success_count: int = 0
 _poll_failure_count: int = 0
 _started_at: datetime = datetime.now(timezone.utc)
+_discord_status: str = "not yet posted"
+# Strong references to in-flight Discord posts: asyncio only keeps weak ones,
+# so an unreferenced task can be garbage-collected mid-post.
+_discord_tasks: set[asyncio.Task] = set()
 
 
 async def _send_with_retry(send, *args, **kwargs):
@@ -93,6 +98,7 @@ def _secret_values() -> list[str]:
         constants.KRAKEN_API_KEY, constants.KRAKEN_API_SECRET,
         constants.BOT_TOKEN, constants.DATABASE_URL, constants.META_MASK,
         constants.TRW_PASSWORD, constants.TRW_TOTP_SECRET,
+        constants.DISCORD_WEBHOOK_URL,
     ]
     if constants.DATABASE_URL:
         values.append(urlsplit(constants.DATABASE_URL).password)
@@ -217,6 +223,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Schedule: every 15 min",
         f"Last poll: {last}",
         f"Last result: {_last_poll_status}",
+        f"Discord: {_discord_status if constants.DISCORD_WEBHOOK_URL else 'off'}",
     ]
     if _credentials_invalid:
         lines.append("⚠️ Paused — TRW credentials invalid (update TRW_PASSWORD and restart)")
@@ -621,6 +628,36 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
     return "\n".join(lines)
 
 
+async def _post_signal_to_discord(bot: ExtBot, allocations: dict, signal_time: str | None) -> None:
+    global _discord_status
+    posted = await discord.post_signal(allocations, signal_time)
+    stamp = f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}"
+    if posted:
+        _discord_status = f"posted {stamp}"
+        return
+    _discord_status = f"failed {stamp}"
+    if not CHAT_ID:
+        return
+    try:
+        await _send_with_retry(
+            bot.send_message,
+            chat_id=CHAT_ID,
+            text="⚠️ Couldn't post the new signal to Discord. Targets were still updated.",
+        )
+    except Exception:
+        logger.exception("Telegram notice of the Discord failure also failed")
+
+
+def _announce_signal_to_discord(bot: ExtBot, allocations: dict, signal_time: str | None) -> None:
+    """Post the signal to Discord in the background, so a slow or down webhook
+    never delays the rebalance that follows."""
+    if not constants.DISCORD_WEBHOOK_URL:
+        return
+    task = asyncio.create_task(_post_signal_to_discord(bot, dict(allocations), signal_time))
+    _discord_tasks.add(task)
+    task.add_done_callback(_discord_tasks.discard)
+
+
 async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     global _credentials_invalid
     now = datetime.now(timezone.utc)
@@ -685,6 +722,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
+    _announce_signal_to_discord(context.bot, allocations, signal_time)
     await _reply(update, _format_signal_message(allocations, signal_time))
 
 
@@ -846,6 +884,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     _last_poll_status = "new signal detected"
+    _announce_signal_to_discord(context.bot, allocations, signal_time)
 
     await _send_with_retry(
         context.bot.send_message,
