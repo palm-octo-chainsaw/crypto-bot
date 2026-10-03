@@ -98,6 +98,7 @@ def bare_balance():
 @pytest.fixture(autouse=True)
 def reset_command_handler_state(monkeypatch):
     """Reset module-level state in utils.command_handlers before each test."""
+    import constants
     from utils import command_handlers as ch
 
     monkeypatch.setattr(ch, "_credentials_invalid", False)
@@ -108,3 +109,6 @@ def reset_command_handler_state(monkeypatch):
     monkeypatch.setattr(ch, "_last_poll_time", None)
     monkeypatch.setattr(ch, "_last_poll_status", "")
     monkeypatch.setattr(ch, "CHAT_ID", "123")
+    monkeypatch.setattr(ch, "_discord_status", "not yet posted")
+    # .env may hold a real webhook; no test should ever post to it.
+    monkeypatch.setattr(constants, "DISCORD_WEBHOOK_URL", "")
