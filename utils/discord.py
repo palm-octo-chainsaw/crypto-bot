@@ -36,6 +36,32 @@ def build_signal_payload(allocations: dict, signal_time: str | None) -> dict:
     return {"embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
+def _retry_delay(response, attempt: int) -> float | None:
+    """Seconds to wait before resending after a failed response, or None when
+    resending is pointless."""
+    if response.status_code == 429:
+        try:
+            retry_after = float(response.json().get("retry_after", 1.0))
+        except ValueError:
+            retry_after = 1.0
+        delay = min(retry_after, MAX_RETRY_AFTER_SECONDS)
+        logger.warning(
+            "Discord rate-limited (attempt %d/%d) — retrying in %.1fs",
+            attempt, POST_ATTEMPTS, delay,
+        )
+        return delay
+    if response.status_code >= 500:
+        logger.warning(
+            "Discord post failed (attempt %d/%d): HTTP %d",
+            attempt, POST_ATTEMPTS, response.status_code,
+        )
+        return POST_RETRY_BASE_DELAY_SECONDS * attempt
+    # 4xx other than 429 means the webhook or payload is wrong; resending it
+    # fails identically.
+    logger.error("Discord rejected post: HTTP %d", response.status_code)
+    return None
+
+
 def _post(url: str, payload: dict) -> bool:
     for attempt in range(1, POST_ATTEMPTS + 1):
         try:
@@ -50,26 +76,8 @@ def _post(url: str, payload: dict) -> bool:
         else:
             if response.ok:
                 return True
-            if response.status_code == 429:
-                try:
-                    retry_after = float(response.json().get("retry_after", 1.0))
-                except ValueError:
-                    retry_after = 1.0
-                delay = min(retry_after, MAX_RETRY_AFTER_SECONDS)
-                logger.warning(
-                    "Discord rate-limited (attempt %d/%d) — retrying in %.1fs",
-                    attempt, POST_ATTEMPTS, delay,
-                )
-            elif response.status_code >= 500:
-                delay = POST_RETRY_BASE_DELAY_SECONDS * attempt
-                logger.warning(
-                    "Discord post failed (attempt %d/%d): HTTP %d",
-                    attempt, POST_ATTEMPTS, response.status_code,
-                )
-            else:
-                # 4xx other than 429 means the webhook or payload is wrong;
-                # resending it fails identically.
-                logger.error("Discord rejected post: HTTP %d", response.status_code)
+            delay = _retry_delay(response, attempt)
+            if delay is None:
                 return False
         if attempt < POST_ATTEMPTS:
             time.sleep(delay)
@@ -89,6 +97,6 @@ async def post_signal(allocations: dict, signal_time: str | None) -> bool | None
     try:
         payload = build_signal_payload(allocations, signal_time)
         return await asyncio.to_thread(_post, url, payload)
-    except Exception as err:
-        logger.error("Discord post crashed: %s", type(err).__name__)
+    except Exception:
+        logger.exception("Discord post crashed")
         return False
