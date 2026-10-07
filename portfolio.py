@@ -85,6 +85,24 @@ class Portfolio:
         logger.debug("Target for %s set to %d%%", symbol, percent)
         return self.targets
 
+    def untracked_targets(self) -> dict[str, float]:
+        """Targets with weight on a symbol the portfolio does not track.
+
+        The rebalance plan only covers tracked symbols, so a signal naming anything
+        else — NEAR, before it was tracked — had its share dropped without a word and
+        left sitting in the stable coin. Callers surface this instead.
+        """
+        return {symbol: pct for symbol, pct in self.targets.items()
+                if pct and symbol not in self.portfolio}
+
+    def _untracked_notice(self) -> str | None:
+        untracked = self.untracked_targets()
+        if not untracked:
+            return None
+        listed = ", ".join(f"{symbol} {pct}%" for symbol, pct in untracked.items())
+        logger.error("Targets on untracked symbols are not rebalanced: %s", listed)
+        return f"⚠️ Not tracked by the bot, left in {STABLE}: {listed}"
+
     def update_portfolio(self) -> None:
         self.balance.refresh_binance_balances()
         self.venues = self.balance.get_venue_balances()
@@ -126,7 +144,7 @@ class Portfolio:
     def evaluate_symbol(self, values: dict, total_value: float) -> None:
         for symbol, value in values.items():
             current_pct = (value / total_value) * 100
-            target_pct = float(self.targets[symbol])
+            target_pct = float(self.targets.get(symbol, 0.0))
             diff = current_pct - target_pct
             arrow = "🔺" if diff > 0 else "🔻"
 
@@ -144,7 +162,7 @@ class Portfolio:
     def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
         usable_value = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
         return {
-            symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol]) / prices[symbol]
+            symbol: ((self.targets.get(symbol, 0.0) / 100) * usable_value - values[symbol]) / prices[symbol]
                     if prices[symbol] > 0 else 0.0
             for symbol in self.portfolio
         }
@@ -168,6 +186,9 @@ class Portfolio:
         self.update_portfolio()
         prices, values, total_value = self.fetch_live_data()
         self.evaluate_symbol(values, total_value)
+        untracked = self._untracked_notice()
+        if untracked:
+            self.summary.add_summary(f"\n{untracked}")
         if self.send_rebalance:
             self.calculate_rebalance(prices, values, total_value)
 
@@ -488,11 +509,15 @@ class Portfolio:
         rebalance = self._compute_rebalance(prices, values, total_value)
 
         sells, buys, skipped = self._plan_trades(rebalance, prices)
+        untracked = self._untracked_notice()
         if not sells and not buys:
             if skipped:
                 lines = ["🔄 *Rebalance — nothing executable*\n"] + [_format_trade_line(t) for t in skipped]
-                return "\n".join(lines)
-            return "✅ Portfolio is balanced — no trades needed."
+            else:
+                lines = ["✅ Portfolio is balanced — no trades needed."]
+            if untracked:
+                lines.append(untracked)
+            return "\n".join(lines)
 
         results = list(skipped)
 
@@ -513,8 +538,7 @@ class Portfolio:
 
         mode = "DRY RUN" if dry_run else "LIVE"
         lines = [f"🔄 *Rebalance {mode}*\n"]
-        if notice:
-            lines.append(notice)
+        lines += [n for n in (untracked, notice) if n]
         lines += [_format_trade_line(t) for t in results]
         return "\n".join(lines)
 

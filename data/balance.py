@@ -60,12 +60,13 @@ class Balance:
 
     # Tracked symbols in report order; also the key set of the aggregate portfolio.
     TRACKED_SYMBOLS = ("BTC", "PAXG", "SOL", "SUI", "USDC",
-                       "ETH", "DOGE", "XRP", "LINK", "HYPE", "BNB")
+                       "ETH", "DOGE", "XRP", "LINK", "HYPE", "BNB", "NEAR")
     # Which symbols each venue is read for. A symbol left out of a venue's set is not
     # counted there even if the account holds it: PAXG is deliberately Kraken-only
     # because Binance rejects PAXG orders (-2010), so crediting a Binance PAXG balance
     # would let the planner size a leg that venue will never fill.
-    BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB"})
+    BINANCE_SYMBOLS = frozenset({"BTC", "SOL", "SUI", "USDC", "ETH", "DOGE", "XRP", "LINK", "BNB",
+                                 "NEAR"})
     ARBITRUM_SYMBOLS = frozenset({"USDC", "ETH"})
     HYPERLIQUID_SYMBOLS = frozenset({"USDC", "HYPE"})
 

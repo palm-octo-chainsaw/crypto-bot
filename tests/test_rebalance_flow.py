@@ -651,3 +651,38 @@ def test_cross_pairs_keeps_the_larger_buy_leg_for_usdc_routing():
 
     assert "ETH" not in sells, "the sell leg is fully consumed"
     assert buys["BTC"] * prices["BTC"] == pytest.approx(700.0, rel=1e-2)
+
+
+def test_execute_rebalance_buys_a_near_target_on_binance(monkeypatch, live_portfolio):
+    """Signal 188 put 22.7% on NEAR; untracked, its share sat in USDC with no leg at all."""
+    from data.balance import Balance
+
+    live_portfolio.portfolio = Balance.aggregate({Balance.BINANCE: {"USDC": 1000.0}})
+    live_portfolio.targets = {"NEAR": 50.0, "USDC": 50.0}
+    prices = {symbol: 1.0 for symbol in Balance.TRACKED_SYMBOLS} | {"NEAR": 5.0}
+    values = {symbol: amount * prices[symbol] for symbol, amount in live_portfolio.portfolio.items()}
+    monkeypatch.setattr(live_portfolio, "fetch_live_data", lambda: (prices, values, 1000.0))
+    ex = FakeExchange(free={"USDC": 1000.0}, markets={"NEAR/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+
+    out = live_portfolio.execute_rebalance(dry_run=False)
+
+    assert [(symbol, side) for symbol, side, _ in ex.orders] == [("NEAR/USDC", "buy")]
+    assert "Not tracked" not in out
+
+
+def test_execute_rebalance_reports_a_target_on_an_untracked_symbol(monkeypatch, live_portfolio):
+    live_portfolio.targets = {"BTC": 50.0, "USDC": 30.0, "FOO": 20.0}
+    ex = FakeExchange(free={"BTC": 0.02, "USDC": 1000.0}, markets={"BTC/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+
+    out = live_portfolio.execute_rebalance(dry_run=True)
+
+    assert "Not tracked by the bot, left in USDC: FOO 20.0%" in out
+
+
+def test_untracked_targets_ignore_zero_weights():
+    p = _portfolio({"BTC": 0.02, "USDC": 1000.0})
+    p.targets = {"BTC": 100.0, "USDC": 0.0, "FOO": 0.0, "BAR": 5.0}
+
+    assert p.untracked_targets() == {"BAR": 5.0}
