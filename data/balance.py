@@ -9,6 +9,7 @@ from constants import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     KRAKEN_API_KEY, KRAKEN_API_SECRET,
 )
+from data.prices import binance_lists_spot_pair
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,8 @@ class Balance:
     # refresh, so its flag is owned by _load_binance_balances() instead.
     LIVE_VENUES = frozenset({ARBITRUM, KRAKEN})
 
-    # Tracked symbols in report order; also the key set of the aggregate portfolio.
+    # Tracked symbols in report order; aggregate() appends any extra symbol a venue
+    # was read for (see track_on_binance) after these.
     TRACKED_SYMBOLS = ("BTC", "PAXG", "SOL", "SUI", "USDC",
                        "ETH", "DOGE", "XRP", "LINK", "HYPE", "BNB", "NEAR")
     # Which symbols each venue is read for. A symbol left out of a venue's set is not
@@ -92,6 +94,8 @@ class Balance:
         self._w3: Web3 | None = None
         self._contracts: dict = {}
         self._degraded: set[str] = set()
+        self._extra_binance: frozenset[str] = frozenset()
+        self._binance_listed: dict[str, bool] = {}
 
     @property
     def degraded(self) -> set[str]:
@@ -133,6 +137,38 @@ class Balance:
             return 0.0
         return float(kraken_raw.get(kraken_key, 0.0))
 
+    @property
+    def binance_symbols(self) -> frozenset[str]:
+        return self.BINANCE_SYMBOLS | self._extra_binance
+
+    def track_on_binance(self, symbols) -> None:
+        """Also read Binance for these symbols, beyond TRACKED_SYMBOLS.
+
+        A signal can name a token the static lists do not know. It is tracked only
+        when Binance lists it against USDC: anything else could be neither priced nor
+        traded, and its target is reported as untracked instead. The listing is
+        cached for the life of the process.
+
+        A failed listing check marks Binance degraded instead of dropping the symbol.
+        A held position missing from the total would size every other leg against a
+        smaller portfolio than the real one.
+        """
+        extra = set()
+        for symbol in sorted(set(symbols) - set(self.TRACKED_SYMBOLS)):
+            if symbol not in self._binance_listed:
+                listed = binance_lists_spot_pair(symbol)
+                if listed is None:
+                    self._mark_degraded(self.BINANCE)
+                    continue
+                if not listed:
+                    logger.warning("%s is not listed on Binance against USDC — not tracked", symbol)
+                self._binance_listed[symbol] = listed
+            if self._binance_listed[symbol]:
+                extra.add(symbol)
+        if extra - self._extra_binance:
+            logger.info("Tracking on Binance beyond the static list: %s", ", ".join(sorted(extra)))
+        self._extra_binance = frozenset(extra)
+
     def get_venue_balances(self) -> dict[str, dict[str, float]]:
         """Holdings split by venue: {venue: {symbol: amount}}.
 
@@ -149,7 +185,7 @@ class Balance:
         kraken_raw = self.get_raw_kraken_balance()
 
         return {
-            self.BINANCE: {s: self.get_binance_balance(s) for s in self.BINANCE_SYMBOLS},
+            self.BINANCE: {s: self.get_binance_balance(s) for s in self.binance_symbols},
             self.KRAKEN: {s: self._kraken_balance(s, kraken_raw) for s in self.KRAKEN_SYMBOL_MAP},
             self.ARBITRUM: {"USDC": self._arbitrum_usdc(), "ETH": self._arbitrum_eth()},
         }
@@ -157,8 +193,9 @@ class Balance:
     @classmethod
     def aggregate(cls, venues: dict[str, dict[str, float]]) -> dict[str, float]:
         """Collapse a per-venue breakdown into one balance per tracked symbol."""
+        extra = sorted({s for held in venues.values() for s in held} - set(cls.TRACKED_SYMBOLS))
         return {symbol: sum(held.get(symbol, 0.0) for held in venues.values())
-                for symbol in cls.TRACKED_SYMBOLS}
+                for symbol in (*cls.TRACKED_SYMBOLS, *extra)}
 
     def get_spot_balance(self) -> dict:
         return self.aggregate(self.get_venue_balances())

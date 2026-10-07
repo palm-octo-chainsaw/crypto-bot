@@ -198,9 +198,16 @@ def test_parse_signal_maps_cash_to_usdc():
     assert parse_signal(SIGNAL) == {"BTC": 40.0, "ETH": 30.0, "USDC": 30.0}
 
 
-def test_parse_signal_ignores_unknown_tickers():
-    text = "RSPS Signal:\n50% BTC\n50% FAKECOIN\n50% ETH"
-    assert parse_signal(text) == {"BTC": 50.0, "ETH": 50.0}
+def test_parse_signal_keeps_new_tickers_but_not_prose():
+    """A coin outside KNOWN_TOKENS is kept so Binance can decide whether it trades;
+    lowercase words caught by the case-insensitive line pattern are not tickers."""
+    text = "RSPS Signal:\n50% BTC\n10% of the book\n50% TAO"
+    assert parse_signal(text) == {"BTC": 50.0, "TAO": 50.0}
+
+
+def test_parse_signal_ignores_ticker_shapes_that_are_not_tickers():
+    text = "RSPS Signal:\n60% BTC\n5% X\n5% 2026\n40% ETH"
+    assert parse_signal(text) == {"BTC": 60.0, "ETH": 40.0}
 
 
 def test_parse_signal_aggregates_duplicate_symbols():

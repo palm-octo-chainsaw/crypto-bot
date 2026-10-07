@@ -2,7 +2,7 @@
 import pytest
 import requests
 
-from data.prices import fetch_prices, PriceFetchError, PriceRateLimitError
+from data.prices import binance_lists_spot_pair, fetch_prices, PriceFetchError, PriceRateLimitError
 
 
 class FakeResponse:
@@ -53,13 +53,59 @@ def test_fetch_prices_raises_on_network_error(monkeypatch):
         fetch_prices(["BTC"])
 
 
-def test_fetch_prices_raises_on_unmapped_symbol(monkeypatch):
-    def unreachable(*a, **k):
-        raise AssertionError("should not hit the network for unmapped symbols")
-    monkeypatch.setattr("data.prices.requests.get", unreachable)
+def test_fetch_prices_reads_unmapped_symbols_off_binance_usdc_pairs(monkeypatch):
+    calls = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        if "coingecko" in url:
+            return FakeResponse({"bitcoin": {"usd": 100.0}})
+        assert params == {"symbols": '["TAOUSDC"]'}
+        return FakeResponse([{"symbol": "TAOUSDC", "price": "289.6"}])
+    monkeypatch.setattr("data.prices.requests.get", fake_get)
+
+    assert fetch_prices(["BTC", "tao"]) == {"BTC": 100.0, "TAO": 289.6}
+    assert len(calls) == 2
+
+
+def test_fetch_prices_skips_coingecko_when_every_symbol_is_unmapped(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        assert "coingecko" not in url
+        return FakeResponse([{"symbol": "TAOUSDC", "price": "289.6"}])
+    monkeypatch.setattr("data.prices.requests.get", fake_get)
+
+    assert fetch_prices(["TAO"]) == {"TAO": 289.6}
+
+
+def test_fetch_prices_raises_on_unmapped_symbol_binance_cannot_price(monkeypatch):
+    def fake_get(url, params=None, timeout=None):
+        if "coingecko" in url:
+            return FakeResponse({"bitcoin": {"usd": 100.0}})
+        return FakeResponse({"code": -1121, "msg": "Invalid symbol."}, status_code=400)
+    monkeypatch.setattr("data.prices.requests.get", fake_get)
 
     with pytest.raises(PriceFetchError, match="NOPE"):
         fetch_prices(["BTC", "NOPE"])
+
+
+@pytest.mark.parametrize("response, expected", [
+    (FakeResponse({"symbols": [{"status": "TRADING", "isSpotTradingAllowed": True}]}), True),
+    (FakeResponse({"symbols": [{"status": "BREAK", "isSpotTradingAllowed": True}]}), False),
+    (FakeResponse({"code": -1121, "msg": "Invalid symbol."}, status_code=400), False),
+    (FakeResponse({"code": -1003, "msg": "Too many requests."}, status_code=429), None),
+])
+def test_binance_lists_spot_pair(monkeypatch, response, expected):
+    monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: response)
+
+    assert binance_lists_spot_pair("TAO") is expected
+
+
+def test_binance_lists_spot_pair_is_unknown_when_binance_is_unreachable(monkeypatch):
+    def boom(*a, **k):
+        raise requests.ConnectionError("dns failure")
+    monkeypatch.setattr("data.prices.requests.get", boom)
+
+    assert binance_lists_spot_pair("TAO") is None
 
 
 def test_fetch_prices_raises_when_symbol_missing(monkeypatch):

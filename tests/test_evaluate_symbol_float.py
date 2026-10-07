@@ -30,3 +30,20 @@ def test_evaluate_symbol_renders_rebalance_with_float_target(_balance_cls):
 
     rebalances = [call.args[0] for call in p.summary.add_rebalance.call_args_list]
     assert any("Target: 42.50%" in r for r in rebalances)
+
+
+@patch("portfolio.Balance")
+def test_evaluate_symbol_leaves_dust_out_of_the_summary(_balance_cls):
+    """Under 0.05% both held and targeted is noise; a 0% holding still to be bought is not."""
+    from portfolio import Portfolio
+
+    p = Portfolio()
+    p.targets = {"BTC": 0.0, "SOL": 60.0, "NEAR": 40.0, "PAXG": 0.04}
+    p.summary = MagicMock()
+
+    p.evaluate_symbol(values={"BTC": 0.04, "SOL": 99.92, "NEAR": 0.0, "PAXG": 0.04},
+                      total_value=100.0)
+
+    summaries = " ".join(call.args[0] for call in p.summary.add_summary.call_args_list)
+    assert "$SOL" in summaries and "$NEAR" in summaries
+    assert "$BTC" not in summaries and "$PAXG" not in summaries
