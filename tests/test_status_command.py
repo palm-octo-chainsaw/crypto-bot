@@ -113,20 +113,20 @@ def test_performance_line_reports_gain(monkeypatch):
     monkeypatch.setattr(ch, "get_snapshot_at_or_before", lambda when: {"total_value_usd": 1000.0})
     line = ch._format_performance_line("24h", timedelta(hours=24), 1250.0,
                                        datetime.now(timezone.utc))
-    assert line == "24h: +$250.00 (+25.00%) 📈"
+    assert line == "24h: +25.00% 📈"
 
 
 def test_performance_line_reports_loss(monkeypatch):
     monkeypatch.setattr(ch, "get_snapshot_at_or_before", lambda when: {"total_value_usd": 1000.0})
     line = ch._format_performance_line("7d", timedelta(days=7), 800.0,
                                        datetime.now(timezone.utc))
-    assert line == "7d: -$200.00 (-20.00%) 📉"
+    assert line == "7d: -20.00% 📉"
 
 
 def test_performance_line_all_window_uses_earliest_snapshot(monkeypatch):
     monkeypatch.setattr(ch, "get_earliest_snapshot", lambda: {"total_value_usd": 500.0})
     line = ch._format_performance_line("all", None, 750.0, datetime.now(timezone.utc))
-    assert line == "all: +$250.00 (+50.00%) 📈"
+    assert line == "all: +50.00% 📈"
 
 
 def test_performance_line_without_history(monkeypatch):
@@ -136,7 +136,7 @@ def test_performance_line_without_history(monkeypatch):
 
 
 def test_performance_line_rejects_nan_baseline(monkeypatch):
-    """A NaN baseline slips through every comparison and would render as -$nan."""
+    """A NaN baseline slips through every comparison and would render as -nan%."""
     monkeypatch.setattr(ch, "get_snapshot_at_or_before", lambda when: {"total_value_usd": float("nan")})
     assert "insufficient history" in ch._format_performance_line(
         "24h", timedelta(hours=24), 1000.0, datetime.now(timezone.utc))
@@ -148,7 +148,8 @@ def test_format_performance_all_windows(monkeypatch, stub_portfolio):
 
     out = ch._format_performance(None)
 
-    assert "Total: $1,234.56 USD" in out
+    assert "$" not in out, "percentages only"
+    assert "USD" not in out
     for label in ch.PERFORMANCE_WINDOW_KEYS:
         assert f"{label}: " in out
 
@@ -174,7 +175,7 @@ async def test_performance_command_replies(monkeypatch, fake_context, stub_portf
 
     await ch.performance(update, fake_context)
 
-    assert "24h: +$234.56" in _replies(update)[0]
+    assert "24h: +23.46% 📈" in _replies(update)[0]
 
 
 @pytest.mark.asyncio

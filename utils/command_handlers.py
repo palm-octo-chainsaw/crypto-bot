@@ -415,7 +415,7 @@ def _format_performance_line(label: str, delta: timedelta | None, end_value: flo
     else:
         snap = get_snapshot_at_or_before(now - delta)
     # `not > 0` rather than `<= 0` so a NaN baseline is rejected too — it would
-    # otherwise slip through every comparison and render as "-$nan (-nan%)".
+    # otherwise slip through every comparison and render as "-nan%".
     if snap is None or not snap["total_value_usd"] > 0:
         return f"{label}: insufficient history"
     start_value = snap["total_value_usd"]
@@ -423,7 +423,7 @@ def _format_performance_line(label: str, delta: timedelta | None, end_value: flo
     pct = pnl / start_value * 100
     emoji = "📈" if pnl >= 0 else "📉"
     sign = "+" if pnl >= 0 else "-"
-    return f"{label}: {sign}${abs(pnl):,.2f} ({sign}{abs(pct):.2f}%) {emoji}"
+    return f"{label}: {sign}{abs(pct):.2f}% {emoji}"
 
 
 def _format_performance(arg: str | None) -> str:
@@ -437,11 +437,7 @@ def _format_performance(arg: str | None) -> str:
         if arg is None
         else [w for w in PERFORMANCE_WINDOWS if w[0] == arg.lower()]
     )
-    lines = [
-        "📊 *Portfolio Performance*",
-        f"Total: ${total:,.2f} USD",
-        "",
-    ]
+    lines = ["📊 *Portfolio Performance*", ""]
     lines.extend(_format_performance_line(label, delta, total, now) for label, delta in selected)
     return "\n".join(lines)
 
