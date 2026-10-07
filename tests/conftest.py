@@ -92,6 +92,8 @@ def bare_balance():
     b._w3 = None
     b._contracts = {}
     b._degraded = set()
+    b._extra_binance = frozenset()
+    b._binance_listed = {}
     return b
 
 

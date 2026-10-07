@@ -22,6 +22,10 @@ KNOWN_TOKENS = {
     "SHIB", "UNI", "AAVE", "ARB", "OP", "NEAR", "FTM", "ATOM",
     "CASH", "USD", "STABLES", "STABLE",
 }
+# A token outside KNOWN_TOKENS is kept when written like a ticker, so a new coin in
+# a signal is not dropped before Binance is asked whether it trades it. Requiring
+# capitals keeps prose ("10% of the book") out, since the line pattern ignores case.
+UNLISTED_TICKER = re.compile(r"(?=[A-Z0-9]*[A-Z])[A-Z0-9]{2,10}")
 
 class TRWRateLimitError(RuntimeError):
     """TRW login returned a rate-limit response (e.g. 'Too many requests')."""
@@ -75,7 +79,9 @@ def parse_signal(text: str) -> dict[str, float]:
         pct = float(match.group(1))
         symbol = match.group(2).upper()
         if symbol not in KNOWN_TOKENS:
-            continue
+            if not UNLISTED_TICKER.fullmatch(match.group(2)):
+                continue
+            logger.info("Signal names %s, outside the known tokens — kept as a ticker", symbol)
         if symbol.lower() in CASH_ALIASES:
             symbol = "USDC"
         if symbol in allocations:

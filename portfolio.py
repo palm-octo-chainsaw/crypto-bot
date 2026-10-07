@@ -17,6 +17,8 @@ logger = setup_logging('info')
 
 STABLE = "USDC"
 REBALANCE_THRESHOLD_PCT = 3.0
+# Summary lines for tokens both held and targeted below this are dust and left out.
+SUMMARY_MIN_PCT = 0.05
 ERR_SIZE_BELOW_PRECISION = "size below precision"
 # Below a cent, a cross-matched leg counts as fully executed rather than leftover.
 MATCHED_USD = 0.01
@@ -98,6 +100,7 @@ class Portfolio:
         self.summary: Summary = Summary()
         self.balance: Balance = Balance()
         self.targets: dict = load_json("config/targets.json")
+        self.balance.track_on_binance(self.targets)
         self.venues: dict = self.balance.get_venue_balances()
         self.portfolio: dict = Balance.aggregate(self.venues)
         self.send_rebalance: bool = False
@@ -130,6 +133,10 @@ class Portfolio:
 
     def update_portfolio(self) -> None:
         self.balance.refresh_binance_balances()
+        # After the refresh, which would clear a degraded flag a failed listing check sets.
+        # Every target key counts, including 0%: a token the latest signal dropped is
+        # still held until the rebalance sells it.
+        self.balance.track_on_binance(self.targets)
         self.venues = self.balance.get_venue_balances()
         self.portfolio = Balance.aggregate(self.venues)
         logger.debug("Portfolio updated: %s", self.portfolio)
@@ -173,9 +180,10 @@ class Portfolio:
             diff = current_pct - target_pct
             arrow = "🔺" if diff > 0 else "🔻"
 
-            self.summary.add_summary(
-                f"${symbol}: {current_pct:.2f}% (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
-            )
+            if current_pct >= SUMMARY_MIN_PCT or target_pct >= SUMMARY_MIN_PCT:
+                self.summary.add_summary(
+                    f"${symbol}: {current_pct:.2f}% (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
+                )
 
             if abs(diff) > REBALANCE_THRESHOLD_PCT:
                 self.summary.add_rebalance(
