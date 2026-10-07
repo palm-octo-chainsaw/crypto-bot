@@ -138,7 +138,7 @@ class Balance:
         return float(kraken_raw.get(kraken_key, 0.0))
 
     @property
-    def binance_symbols(self) -> frozenset[str]:
+    def effective_binance_symbols(self) -> frozenset[str]:
         return self.BINANCE_SYMBOLS | self._extra_binance
 
     def track_on_binance(self, symbols) -> None:
@@ -185,7 +185,7 @@ class Balance:
         kraken_raw = self.get_raw_kraken_balance()
 
         return {
-            self.BINANCE: {s: self.get_binance_balance(s) for s in self.binance_symbols},
+            self.BINANCE: {s: self.get_binance_balance(s) for s in self.effective_binance_symbols},
             self.KRAKEN: {s: self._kraken_balance(s, kraken_raw) for s in self.KRAKEN_SYMBOL_MAP},
             self.ARBITRUM: {"USDC": self._arbitrum_usdc(), "ETH": self._arbitrum_eth()},
         }

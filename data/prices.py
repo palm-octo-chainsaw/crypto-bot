@@ -80,7 +80,7 @@ def _fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
         response.raise_for_status()
         tickers = response.json()
     except (RequestException, ValueError) as error:
-        logger.error("Error fetching Binance prices for %s: %s", ", ".join(symbols), error)
+        logger.exception("Error fetching Binance prices for %s", ", ".join(symbols))
         raise PriceFetchError(f"no price source for: {', '.join(symbols)} ({error})") from error
     return {pairs[t["symbol"]]: float(t["price"]) for t in tickers if t.get("symbol") in pairs}
 

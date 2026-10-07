@@ -45,5 +45,7 @@ def test_evaluate_symbol_leaves_dust_out_of_the_summary(_balance_cls):
                       total_value=100.0)
 
     summaries = " ".join(call.args[0] for call in p.summary.add_summary.call_args_list)
-    assert "$SOL" in summaries and "$NEAR" in summaries
-    assert "$BTC" not in summaries and "$PAXG" not in summaries
+    assert "$SOL" in summaries
+    assert "$NEAR" in summaries
+    assert "$BTC" not in summaries
+    assert "$PAXG" not in summaries

@@ -311,7 +311,7 @@ def test_a_signal_token_listed_on_binance_is_read_there_and_aggregated(monkeypat
 
     bare_balance.track_on_binance({"TAO": 0.0, "FOMC": 3.0})
     assert asked == ["FOMC", "TAO"], "listings are cached"
-    assert "TAO" in bare_balance.binance_symbols, "a 0% target is still held until sold"
+    assert "TAO" in bare_balance.effective_binance_symbols, "a 0% target is still held until sold"
 
 
 def test_a_failed_listing_check_degrades_binance_and_is_retried(monkeypatch, bare_balance):
@@ -322,7 +322,7 @@ def test_a_failed_listing_check_degrades_binance_and_is_retried(monkeypatch, bar
 
     bare_balance.track_on_binance({"TAO": 20.0})
     assert Balance.BINANCE in bare_balance.degraded
-    assert "TAO" not in bare_balance.binance_symbols
+    assert "TAO" not in bare_balance.effective_binance_symbols
 
     bare_balance.track_on_binance({"TAO": 20.0})
-    assert "TAO" in bare_balance.binance_symbols
+    assert "TAO" in bare_balance.effective_binance_symbols
