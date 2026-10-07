@@ -82,7 +82,11 @@ def _fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
     except (RequestException, ValueError) as error:
         logger.exception("Error fetching Binance prices for %s", ", ".join(symbols))
         raise PriceFetchError(f"no price source for: {', '.join(symbols)} ({error})") from error
-    return {pairs[t["symbol"]]: float(t["price"]) for t in tickers if t.get("symbol") in pairs}
+    try:
+        return {pairs[t["symbol"]]: float(t["price"]) for t in tickers if t.get("symbol") in pairs}
+    except (AttributeError, KeyError, TypeError, ValueError) as error:
+        # A ticker without a price, a non-numeric one, or an error object instead of the list.
+        raise PriceFetchError(f"malformed Binance ticker response: {tickers!r:.200}") from error
 
 
 def fetch_prices(symbols: list) -> dict[str, float]:

@@ -123,3 +123,16 @@ def test_fetch_prices_raises_when_a_coin_comes_back_without_a_usd_quote(monkeypa
 
     with pytest.raises(PriceFetchError, match="missing prices for: ETH"):
         fetch_prices(["BTC", "ETH"])
+
+
+@pytest.mark.parametrize("tickers", [
+    [{"symbol": "TAOUSDC"}],
+    [{"symbol": "TAOUSDC", "price": "n/a"}],
+    {"code": -1100, "msg": "Illegal characters found in parameter 'symbols'."},
+])
+def test_fetch_prices_raises_price_error_on_a_malformed_binance_ticker(monkeypatch, tickers):
+    """Callers handle PriceFetchError; a KeyError or ValueError would escape as a crash."""
+    monkeypatch.setattr("data.prices.requests.get", lambda *a, **k: FakeResponse(tickers))
+
+    with pytest.raises(PriceFetchError, match="malformed Binance ticker"):
+        fetch_prices(["TAO"])
