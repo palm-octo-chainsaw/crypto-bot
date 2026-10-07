@@ -1,15 +1,12 @@
 version: 2
 updates:
-  # Keeps the digest-pinned base image in the Dockerfile current. Each update is a
-  # PR touching the Dockerfile, so merging it also triggers warm-build-cache.yml
-  # and the next release builds against a warm cache for the new base.
+  # Bumps the pinned base image; merging re-warms the build cache.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
       day: monday
     ignore:
-      # Digest refreshes and patch releases only. Moving to another Python minor
-      # (3.15) is a code change to make on purpose, not a weekly bump.
+      # Digest and patch updates only; a new Python minor is a deliberate change.
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
