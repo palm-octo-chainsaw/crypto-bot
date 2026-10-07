@@ -1,14 +1,19 @@
 import asyncio
+import html
 import logging
 import os
+import traceback
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
 from telegram import Update, BotCommand
 from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ContextTypes, ExtBot, Application
 
+from utils import discord
 from utils.helpers import format_message, write_json
 from portfolio import Portfolio
+import constants
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
 from data.prices import PriceRateLimitError
@@ -22,7 +27,15 @@ logger = logging.getLogger(__name__)
 portfolio = Portfolio()
 
 TARGETS_FILE = "config/targets.json"
-GENERIC_ERROR_REPLY = "⚠️ Something went wrong. Check logs for details."
+GENERIC_ERROR_REPLY = "⚠️ Something went wrong."
+LIVE_REBALANCE_ERROR_REPLY = ("⚠️ Live rebalance failed partway — some trades may already "
+                              "have executed. Check Binance before retrying.")
+FETCH_SIGNAL_ERROR_REPLY = "⚠️ Error fetching signal."
+AUTO_REBALANCE_ERROR_REPLY = "⚠️ Auto-rebalance failed."
+
+# Telegram rejects messages over 4096 characters; leave room for the headline.
+ERROR_DETAIL_MAX_CHARS = 3500
+REDACTED = "[redacted]"
 
 SIGNAL_POLL_INTERVAL_SECONDS = 900  # 15 minutes
 SIGNAL_POLL_JOB_NAME = "signal_poll"
@@ -42,6 +55,10 @@ _last_poll_status: str = "not yet run"
 _poll_success_count: int = 0
 _poll_failure_count: int = 0
 _started_at: datetime = datetime.now(timezone.utc)
+_discord_status: str = "not yet posted"
+# Strong references to in-flight Discord posts: asyncio only keeps weak ones,
+# so an unreferenced task can be garbage-collected mid-post.
+_discord_tasks: set[asyncio.Task] = set()
 
 
 async def _send_with_retry(send, *args, **kwargs):
@@ -71,6 +88,51 @@ async def _send_with_retry(send, *args, **kwargs):
                 attempt, SEND_ATTEMPTS, err, delay,
             )
             await asyncio.sleep(delay)
+
+
+def _secret_values() -> list[str]:
+    """Credentials that must never reach the chat, longest first so a secret
+    containing another is replaced whole."""
+    values = [
+        constants.BINANCE_API_KEY, constants.BINANCE_API_SECRET,
+        constants.KRAKEN_API_KEY, constants.KRAKEN_API_SECRET,
+        constants.BOT_TOKEN, constants.DATABASE_URL, constants.META_MASK,
+        constants.TRW_PASSWORD, constants.TRW_TOTP_SECRET,
+        constants.DISCORD_WEBHOOK_URL,
+    ]
+    if constants.DATABASE_URL:
+        values.append(urlsplit(constants.DATABASE_URL).password)
+    return sorted({v for v in values if v}, key=len, reverse=True)
+
+
+def _redact(text: str) -> str:
+    for secret in _secret_values():
+        text = text.replace(secret, REDACTED)
+    return text
+
+
+def format_error_reply(headline: str, error: BaseException) -> str:
+    """The headline plus the exception's traceback, as Telegram HTML.
+
+    Keeps the tail of the traceback when it is too long — the raising frame
+    and the exception message are what the reader needs.
+    """
+    detail = _redact("".join(traceback.format_exception(error)).rstrip())
+    limit = ERROR_DETAIL_MAX_CHARS
+    while True:
+        clipped = detail if len(detail) <= limit else "…" + detail[-limit:]
+        body = html.escape(clipped)
+        # Escaping can lengthen the text (& -> &amp;), so trim until it fits.
+        if len(body) <= ERROR_DETAIL_MAX_CHARS:
+            break
+        limit = limit * ERROR_DETAIL_MAX_CHARS // len(body)
+    return f"{html.escape(headline)}\n\n<pre>{body}</pre>"
+
+
+async def _reply_error(update: Update, headline: str, error: BaseException) -> None:
+    await _send_with_retry(
+        update.message.reply_text, format_error_reply(headline, error), parse_mode="HTML",
+    )
 
 
 def _write_heartbeat() -> None:
@@ -105,7 +167,9 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         # would fail exactly the same way.
         return
     try:
-        await _send_with_retry(message.reply_text, GENERIC_ERROR_REPLY)
+        await _send_with_retry(
+            message.reply_text, format_error_reply(GENERIC_ERROR_REPLY, context.error), parse_mode="HTML",
+        )
     except TelegramError as err:
         logger.warning("Could not deliver the error notice: %s", err)
 
@@ -159,6 +223,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Schedule: every 15 min",
         f"Last poll: {last}",
         f"Last result: {_last_poll_status}",
+        f"Discord: {_discord_status if constants.DISCORD_WEBHOOK_URL else 'off'}",
     ]
     if _credentials_invalid:
         lines.append("⚠️ Paused — TRW credentials invalid (update TRW_PASSWORD and restart)")
@@ -387,7 +452,7 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         message = _format_performance(arg)
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
 
@@ -397,7 +462,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = _format_info()
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
 
@@ -412,7 +477,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = portfolio.listener()
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _send_with_retry(update.message.reply_text, message, parse_mode="Markdown")
 
@@ -445,7 +510,7 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _reply(update, f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD")
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -455,7 +520,7 @@ async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _reply(update, "💰 *Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -464,7 +529,7 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
         await _reply(update, "📈 *Leverage Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
         logger.error("Command failed: %s", error, exc_info=True)
-        await _reply(update, GENERIC_ERROR_REPLY, formatted=False)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -474,7 +539,21 @@ async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             update.message.reply_text,
             "⚠️ *LIVE MODE* — executing real trades on Binance...", parse_mode="Markdown"
         )
-    await _reply(update, portfolio.execute_rebalance(dry_run=not live))
+    try:
+        result = portfolio.execute_rebalance(dry_run=not live)
+    except PriceRateLimitError as error:
+        logger.warning("rebalance: CoinGecko rate-limited: %s", error)
+        await _reply(update, "⏳ CoinGecko rate-limited — no trades placed. Try again shortly.",
+                     formatted=False)
+        return
+    except Exception as error:
+        logger.exception("rebalance failed: %s", error)
+        # Past the LIVE notice, the user cannot tell from a generic error whether
+        # orders went out before the failure.
+        headline = LIVE_REBALANCE_ERROR_REPLY if live else GENERIC_ERROR_REPLY
+        await _reply_error(update, headline, error)
+        return
+    await _reply(update, result)
 
 
 def _allocations_match(a: dict | None, b: dict | None, tol: float = 0.01) -> bool:
@@ -501,6 +580,35 @@ def _is_same_signal(allocations: dict, signal_time: str | None) -> bool:
     return True
 
 
+def _parse_signal_time(value: str | None) -> tuple[datetime, bool] | None:
+    """Parse a scraped signal timestamp into (posted-at, has time of day)."""
+    if not value:
+        return None
+    for fmt, has_time in (("%Y-%m-%d %H:%M", True), ("%Y-%m-%d", False)):
+        try:
+            return datetime.strptime(value, fmt), has_time
+        except ValueError:
+            continue
+    return None
+
+
+def _is_older_signal(signal_time: str | None, last_ts: str | None) -> bool:
+    """True when the scraped signal was posted before the one we already hold.
+
+    A scrape of a page still showing old history returns an older signal with a
+    real timestamp, and its allocations differ from ours, so it reads as new.
+    TRW shows only a date for messages older than yesterday; when either side
+    lacks a time of day, compare dates alone, so a same-day pair is never called
+    older. A timestamp that doesn't parse can't be ordered and isn't either.
+    """
+    new, last = _parse_signal_time(signal_time), _parse_signal_time(last_ts)
+    if new is None or last is None:
+        return False
+    if new[1] and last[1]:
+        return new[0] < last[0]
+    return new[0].date() < last[0].date()
+
+
 def _apply_allocations(allocations: dict) -> None:
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
@@ -518,6 +626,36 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
         lines.append(f"{symbol}: {pct}%")
     lines.append(f"\nTotal: {sum(allocations.values())}%")
     return "\n".join(lines)
+
+
+async def _post_signal_to_discord(bot: ExtBot, allocations: dict, signal_time: str | None) -> None:
+    global _discord_status
+    posted = await discord.post_signal(allocations, signal_time)
+    stamp = f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M UTC}"
+    if posted:
+        _discord_status = f"posted {stamp}"
+        return
+    _discord_status = f"failed {stamp}"
+    if not CHAT_ID:
+        return
+    try:
+        await _send_with_retry(
+            bot.send_message,
+            chat_id=CHAT_ID,
+            text="⚠️ Couldn't post the new signal to Discord. Targets were still updated.",
+        )
+    except Exception:
+        logger.exception("Telegram notice of the Discord failure also failed")
+
+
+def _announce_signal_to_discord(bot: ExtBot, allocations: dict, signal_time: str | None) -> None:
+    """Post the signal to Discord in the background, so a slow or down webhook
+    never delays the rebalance that follows."""
+    if not constants.DISCORD_WEBHOOK_URL:
+        return
+    task = asyncio.create_task(_post_signal_to_discord(bot, dict(allocations), signal_time))
+    _discord_tasks.add(task)
+    task.add_done_callback(_discord_tasks.discard)
 
 
 async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -560,7 +698,7 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     except Exception as error:
         logger.error("Failed to fetch signal: %s", error, exc_info=True)
-        await _reply(update, "⚠️ Error fetching signal. Check logs for details.", formatted=False)
+        await _reply_error(update, FETCH_SIGNAL_ERROR_REPLY, error)
         return
 
     if not allocations:
@@ -572,8 +710,19 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _reply(update, f"ℹ️ Signal unchanged — {detail}.", formatted=False)
         return
 
+    last_ts = get_latest_message_timestamp()
+    if _is_older_signal(signal_time, last_ts):
+        logger.warning("fetch_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
+        await _reply(
+            update,
+            f"⚠️ Scraped signal ({signal_time}) is older than the current one ({last_ts}) — ignoring. Try again.",
+            formatted=False,
+        )
+        return
+
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
+    _announce_signal_to_discord(context.bot, allocations, signal_time)
     await _reply(update, _format_signal_message(allocations, signal_time))
 
 
@@ -622,6 +771,18 @@ async def _alert_price_rate_limit(context: ContextTypes.DEFAULT_TYPE, error: Exc
         text="⏳ *CoinGecko rate-limited* — price fetches failing. Will retry next poll.",
         parse_mode="Markdown",
     )
+
+
+def _poll_skip_status(allocations: dict, signal_time: str | None) -> str | None:
+    """Poll status explaining why this scrape isn't applied, or None for a new signal."""
+    if _is_same_signal(allocations, signal_time):
+        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
+        return f"unchanged (timestamp {signal_time})"
+    last_ts = get_latest_message_timestamp()
+    if _is_older_signal(signal_time, last_ts):
+        logger.warning("poll_signal: scraped signal (%s) is older than current (%s) — ignoring", signal_time, last_ts)
+        return f"ignored older signal ({signal_time})"
+    return None
 
 
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -691,11 +852,12 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             await _send_with_retry(
                 context.bot.send_message,
                 chat_id=CHAT_ID,
-                text=(
-                    f"⚠️ *TRW scrape failing* — {_scrape_failure_count} consecutive errors.\n"
-                    f"Auto-rebalance is paused. Check logs or run /fetch_signal manually."
+                text=format_error_reply(
+                    f"⚠️ TRW scrape failing — {_scrape_failure_count} consecutive errors.\n"
+                    f"Auto-rebalance is paused. Run /fetch_signal manually once fixed.",
+                    error,
                 ),
-                parse_mode="Markdown",
+                parse_mode="HTML",
             )
         return
 
@@ -713,15 +875,16 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "no allocations parsed"
         return
 
-    if _is_same_signal(allocations, signal_time):
-        logger.info("poll_signal: signal unchanged (timestamp %s)", signal_time)
-        _last_poll_status = f"unchanged (timestamp {signal_time})"
+    skip_status = _poll_skip_status(allocations, signal_time)
+    if skip_status:
+        _last_poll_status = skip_status
         return
 
     logger.info("poll_signal: new signal detected (timestamp %s), applying and rebalancing", signal_time)
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     _last_poll_status = "new signal detected"
+    _announce_signal_to_discord(context.bot, allocations, signal_time)
 
     await _send_with_retry(
         context.bot.send_message,
@@ -758,8 +921,8 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_with_retry(
             context.bot.send_message,
             chat_id=CHAT_ID,
-            text="⚠️ Auto-rebalance failed. Check logs for details.",
-            parse_mode="Markdown",
+            text=format_error_reply(AUTO_REBALANCE_ERROR_REPLY, error),
+            parse_mode="HTML",
         )
         return
 

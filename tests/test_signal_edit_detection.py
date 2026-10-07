@@ -244,3 +244,63 @@ async def test_poll_signal_skips_rebalance_when_within_drift(monkeypatch, fake_c
     await ch.poll_signal(fake_context)
 
     assert "within drift threshold" in ch._last_poll_status
+
+
+def test_older_signal_by_time_of_day():
+    assert ch._is_older_signal("2026-09-19 00:05", "2026-09-19 00:12")
+    assert not ch._is_older_signal("2026-09-19 00:12", "2026-09-19 00:12")
+    assert not ch._is_older_signal("2026-09-20 00:12", "2026-09-19 00:12")
+
+
+def test_older_signal_compares_dates_when_one_side_is_date_only():
+    """TRW shows only a date past yesterday; same-day pairs can't be ordered."""
+    assert ch._is_older_signal("2026-09-12", "2026-09-19 00:12")
+    assert not ch._is_older_signal("2026-09-19", "2026-09-19 00:12")
+    assert not ch._is_older_signal("2026-09-19 00:12", "2026-09-12")
+
+
+def test_older_signal_is_false_without_a_comparable_timestamp():
+    assert not ch._is_older_signal(None, "2026-09-19 00:12")
+    assert not ch._is_older_signal("2026-09-12", None)
+    assert not ch._is_older_signal("Last Monday at 3:09 AM", "2026-09-19 00:12")
+
+
+@pytest.mark.asyncio
+async def test_poll_signal_ignores_an_older_signal(monkeypatch, fake_context):
+    """Page still on old history → older signal with other allocations must not be applied."""
+    async def fake_scrape():
+        return {"ETH": 75.0, "PAXG": 25.0, "USDC": 0.0}, "2026-09-12"
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-09-19 00:12")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"SOL": 66.7, "HYPE": 33.3, "USDC": 0.0})
+
+    def boom(*a, **kw):
+        raise AssertionError("should not apply a signal older than the current one")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.poll_signal(fake_context)
+
+    assert "ignored older signal" in ch._last_poll_status
+
+
+@pytest.mark.asyncio
+async def test_fetch_signal_ignores_an_older_signal(monkeypatch, fake_context):
+    async def fake_scrape():
+        return {"ETH": 75.0, "PAXG": 25.0, "USDC": 0.0}, "2026-09-12"
+    monkeypatch.setattr(ch, "scrape_signal", fake_scrape)
+    monkeypatch.setattr(ch, "get_latest_message_timestamp", lambda: "2026-09-19 00:12")
+    monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"SOL": 66.7, "HYPE": 33.3, "USDC": 0.0})
+
+    def boom(*a, **kw):
+        raise AssertionError("should not apply a signal older than the current one")
+    monkeypatch.setattr(ch, "record_signal", boom)
+    monkeypatch.setattr(ch, "_apply_allocations", boom)
+
+    update = _make_update()
+    await ch.fetch_signal(update, fake_context)
+
+    sent = update.message.reply_text.call_args[0][0]
+    assert "older" in sent
+    assert "2026-09-12" in sent

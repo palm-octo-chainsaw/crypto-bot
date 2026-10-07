@@ -1,0 +1,158 @@
+# Runs docker-publish.yml's verify steps against the release that is already
+# deployed, so the Tailscale route, the ci-verify rights and the digest check
+# can be tried without cutting a tag. Nothing is published, and ArgoCD is never
+# refreshed or synced: the annotate below is a server-side dry run.
+#
+# Run it by hand from the Actions tab or `gh workflow run verify-smoke.yml`.
+# workflow_dispatch only works once this file is on master; until then the push
+# trigger covers the branch.
+name: Verify smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/verify-over-tailscale]
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: correct
+            version: v1.10.2
+            digest: sha256:7376b92933b18667c71100763aa4f3d80e8599044327ba71f7e0d82cb44e9c59
+            expect: success
+          - case: wrong-digest
+            version: v1.10.2
+            digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+            expect: failure
+          - case: no-such-tag
+            version: v0.0.0
+            digest: sha256:7376b92933b18667c71100763aa4f3d80e8599044327ba71f7e0d82cb44e9c59
+            expect: failure
+          - case: empty-digest
+            version: v1.10.2
+            digest: ""
+            expect: failure
+    name: digest (${{ matrix.case }})
+    steps:
+      # Body copied from verify. The step may fail here; the next one checks
+      # that it did so exactly when the case says it should.
+      - name: The tag serves the image this run built
+        id: check
+        continue-on-error: true
+        env:
+          VERSION: ${{ matrix.version }}
+          DIGEST: ${{ matrix.digest }}
+        run: |
+          repo=a77878123/crypto-bot
+          token=$(curl -fsSL \
+            "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" \
+            | jq -r .token)
+          got=$(curl -fsSL -I \
+            -H "Authorization: Bearer ${token}" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+            "https://registry-1.docker.io/v2/${repo}/manifests/${VERSION}" \
+            | tr -d '\r' | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+          echo "registry serves: ${got:-<nothing>}"
+          echo "this run built:  ${DIGEST}"
+          [ -n "$got" ] && [ "$got" = "$DIGEST" ] \
+            || { echo "::error::${VERSION} does not serve this run's image"; exit 1; }
+
+      - name: Outcome matches the case
+        env:
+          OUTCOME: ${{ steps.check.outcome }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          echo "case=${{ matrix.case }} outcome=${OUTCOME} expect=${EXPECT}"
+          [ "$OUTCOME" = "$EXPECT" ]
+
+  cluster:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Write the kubeconfig
+        env:
+          KUBECONFIG_CI: ${{ secrets.KUBECONFIG_CI }}
+        run: |
+          umask 077
+          printf '%s' "$KUBECONFIG_CI" > "$RUNNER_TEMP/kubeconfig"
+          ls -l "$RUNNER_TEMP/kubeconfig"
+
+      # Not in verify. Names the missing right outright instead of leaving it
+      # to a 403 from the annotate below.
+      - name: What ci-verify may do
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          kubectl version
+          kubectl auth can-i patch applications.argoproj.io/crypto-bot -n argocd
+          kubectl auth can-i get deployments/crypto-bot -n default
+          kubectl auth can-i get pods -n default
+
+      # The tag is whatever is running now, so the wait below has nothing to
+      # wait for and this keeps working after the next release.
+      - name: Read the live tag
+        id: live
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          image=$(kubectl -n default get deploy crypto-bot \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "live image: ${image}"
+          echo "version=${image#a77878123/crypto-bot:}" >> "$GITHUB_OUTPUT"
+
+      # verify does this for real. Here the server checks the right and the
+      # request and then throws the change away, so ArgoCD never sees it.
+      - name: Refresh is allowed (dry run)
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          kubectl -n argocd annotate application crypto-bot \
+            argocd.argoproj.io/refresh=normal --overwrite --dry-run=server
+
+      - name: Wait for the live tag (nothing is deployed)
+        env:
+          VERSION: ${{ steps.live.outputs.version }}
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          want="a77878123/crypto-bot:${VERSION}"
+          deadline=$(( $(date +%s) + 600 ))
+          until [ "$(kubectl -n default get deploy crypto-bot \
+                     -o jsonpath='{.spec.template.spec.containers[0].image}')" = "$want" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::ArgoCD did not apply $want within 10m"; exit 1
+            fi
+            sleep 10
+          done
+          kubectl -n default rollout status deployment/crypto-bot --timeout=900s
+
+      - name: Verify container status
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: |
+          KC="kubectl -n default"
+          attempts=3
+          for i in $(seq 1 "$attempts"); do
+            $KC get pods -l app=crypto-bot -o wide
+            phase=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.phase}')
+            ready=$($KC get pod -l app=crypto-bot -o jsonpath='{.items[0].status.containerStatuses[0].ready}')
+            echo "attempt $i/$attempts: phase=$phase ready=$ready"
+            if [ "$phase" = "Running" ] && [ "$ready" = "true" ]; then
+              echo "Deploy successful: crypto-bot is Running and ready."
+              exit 0
+            fi
+            [ "$i" -lt "$attempts" ] && sleep 10
+          done
+          echo "::error::crypto-bot did not reach a successful state after $attempts checks (phase=$phase ready=$ready)"
+          exit 1

@@ -50,6 +50,49 @@ async def test_rebalance_live_warns_before_trading(monkeypatch, fake_update, fak
 
 
 @pytest.mark.asyncio
+async def test_rebalance_live_failure_warns_that_trades_may_have_executed(
+        monkeypatch, fake_update, fake_context):
+    fake_context.args = ["live"]
+
+    def boom(dry_run):
+        raise RuntimeError("binance 503")
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.rebalance(fake_update, fake_context)
+
+    assert fake_update.message.replies[-1].startswith(ch.LIVE_REBALANCE_ERROR_REPLY)
+    assert "binance 503" in fake_update.message.replies[-1]
+
+
+@pytest.mark.asyncio
+async def test_rebalance_dry_run_failure_replies_generically(monkeypatch, fake_update, fake_context):
+    fake_context.args = []
+
+    def boom(dry_run):
+        raise RuntimeError("binance 503")
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", boom)
+
+    await ch.rebalance(fake_update, fake_context)
+
+    assert len(fake_update.message.replies) == 1
+    assert fake_update.message.replies[0].startswith(ch.GENERIC_ERROR_REPLY)
+    assert "RuntimeError: binance 503" in fake_update.message.replies[0]
+
+
+@pytest.mark.asyncio
+async def test_rebalance_reports_a_price_rate_limit(monkeypatch, fake_update, fake_context):
+    fake_context.args = ["live"]
+
+    def rate_limited(dry_run):
+        raise ch.PriceRateLimitError("429")
+    monkeypatch.setattr(ch.portfolio, "execute_rebalance", rate_limited)
+
+    await ch.rebalance(fake_update, fake_context)
+
+    assert "rate-limited — no trades placed" in fake_update.message.replies[-1]
+
+
+@pytest.mark.asyncio
 async def test_fetch_signal_refuses_while_credentials_are_flagged(monkeypatch, fake_update, fake_context):
     monkeypatch.setattr(ch, "_credentials_invalid", True)
 

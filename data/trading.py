@@ -1,7 +1,6 @@
 """Trade routing and execution via ccxt."""
 
 import logging
-import requests
 import ccxt
 
 logger = logging.getLogger(__name__)
@@ -22,23 +21,6 @@ def create_binance(api_key: str, api_secret: str):
         "enableRateLimit": True,
         "options": {"fetchMarkets": {"types": BINANCE_MARKET_TYPES}},
     })
-    exchange.load_markets()
-    return exchange
-
-
-# Max slippage Hyperliquid market orders are allowed. A buy is submitted at
-# price * (1 + this), so budgeting a buy against free USDC has to leave the same
-# headroom or the order costs more than the wallet holds and is rejected outright.
-HYPERLIQUID_SLIPPAGE = 0.005
-
-
-def create_hyperliquid(wallet_address: str, private_key: str):
-    exchange = ccxt.hyperliquid({
-        "walletAddress": wallet_address,
-        "privateKey": private_key,
-        "enableRateLimit": True,
-    })
-    exchange.options["defaultSlippage"] = HYPERLIQUID_SLIPPAGE
     exchange.load_markets()
     return exchange
 
@@ -78,58 +60,31 @@ def effective_min_usd(exchange, symbol: str, floor: float) -> float:
     return max(floor, min_notional(exchange, symbol))
 
 
-def _fetch_hyperliquid_fee(user_address: str, oid: str) -> dict:
-    """Fetch fee info for a Hyperliquid order from the fills API."""
-    try:
-        payload = {
-            "type": "userFillsByTime",
-            "user": user_address,
-            "startTime": 0,
-            "aggregateByTime": False,
-        }
-        resp = requests.post("https://api.hyperliquid.xyz/info", json=payload, timeout=10)
-        resp.raise_for_status()
-        for fill in reversed(resp.json()):
-            if str(fill.get("oid")) == str(oid):
-                return {
-                    "cost": float(fill.get("fee", 0)),
-                    "currency": fill.get("feeToken"),
-                }
-    except Exception as err:
-        logger.warning("Failed to fetch Hyperliquid fill fee: %s", err)
-    return {}
-
-
 def _restore_order_identity(order: dict, symbol: str, side: str) -> dict:
     """Fill in what the venue left out of its order response.
 
-    Hyperliquid answers a market order with the fill alone — `totalSz`, `avgPx`,
-    `oid` — and no coin or side, so ccxt parses `symbol` and `side` as None. That
-    reached Telegram as "✅ `23.33` None" and, worse, `_persist_trades` wrote the
-    row with an empty symbol and no price, leaving every HYPE fill unattributable
-    in the trade history. We asked for this order, so the request is the
-    authority on what it was; only fields the venue actually returned win.
+    Some venues answer a market order with the fill alone — no coin or side — so
+    ccxt parses `symbol` and `side` as None. That once reached Telegram as
+    "✅ `23.33` None" and, worse, `_persist_trades` wrote the row with an empty
+    symbol and no price, leaving those fills unattributable in the trade history.
+    We asked for this order, so the request is the authority on what it was; only
+    fields the venue actually returned win.
     """
     order["symbol"] = order.get("symbol") or symbol
     order["side"] = order.get("side") or side
     return order
 
 
-def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool,
-                price: float | None = None) -> dict:
+def place_order(exchange, symbol: str, side: str, amount: float, dry_run: bool) -> dict:
     if dry_run:
         logger.info("[DRY RUN] %s %s on %s", side.upper(), amount, symbol)
         return {"symbol": symbol, "side": side, "amount": amount, "dry_run": True}
     logger.info("Executing: %s %s on %s", side.upper(), amount, symbol)
     order = _restore_order_identity(
-        exchange.create_market_order(symbol, side, amount, price=price), symbol, side
+        exchange.create_market_order(symbol, side, amount), symbol, side
     )
     order["amount"] = order.get("amount") or amount
     fee = order.get("fee") or {}
-    # Hyperliquid doesn't return fees in the order response — fetch from fills
-    if not fee and hasattr(exchange, 'walletAddress'):
-        user = getattr(exchange, 'hyperliquid_user', exchange.walletAddress)
-        fee = _fetch_hyperliquid_fee(user, order.get("id"))
     order["fee_amount"] = fee.get("cost")
     order["fee_currency"] = fee.get("currency")
     order["fee_rate"] = fee.get("rate")

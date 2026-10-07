@@ -64,10 +64,12 @@ def test_trade_status_precedence():
     assert pf._trade_status({"id": "1"}) == "filled"
 
 
-def test_format_trade_line_manual_points_at_kraken():
+def test_format_trade_line_manual_names_no_exchange():
+    """MANUAL_ASSETS is operator-configured, so the line cannot know where to trade."""
     line = pf._format_trade_line({"symbol": "PAXG", "side": "sell", "usd_value": 42.0, "manual": True})
     assert "MANUAL SELL PAXG ($42.00)" in line
-    assert "Kraken" in line
+    assert "execute it manually" in line
+    assert "Kraken" not in line
 
 
 def test_format_trade_line_dust_names_the_minimum():
@@ -163,6 +165,30 @@ def test_cross_pairs_skips_when_matched_value_is_below_the_venue_minimum():
 
     assert results == [] and ex.orders == []
     assert sells == {"ETH": 0.4} and buys == {"BTC": 0.0002}
+
+
+def test_cross_pairs_leaves_a_sub_minimum_remainder_for_usdc_routing():
+    """A $50 remainder under the $100 cross minimum is still owed a trade or a dust line.
+
+    It used to be popped from the plan, so it was never traded and never reported."""
+    ex = FakeExchange(
+        free={"ETH": 1.0},
+        markets={"ETH/BTC": {"limits": {"cost": {"min": 100.0}}}, "ETH/USDC": {}, "BTC/USDC": {}},
+    )
+    p = _portfolio({"ETH": 1.0})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0}
+    sells, buys = {"ETH": 0.4}, {"BTC": 0.019}      # $1000 sell vs $950 buy
+
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert sells["ETH"] * prices["ETH"] == pytest.approx(50.0)
+    assert "BTC" not in buys, "the buy was fully matched"
+
+    sells, buys = {"ETH": 0.38}, {"BTC": 0.02}      # $950 sell vs $1000 buy
+    p._execute_cross_pairs(ex, sells, buys, prices, dry_run=False)
+
+    assert buys["BTC"] * prices["BTC"] == pytest.approx(50.0)
+    assert "ETH" not in sells, "the sell was fully matched"
 
 
 def test_cross_pairs_skips_when_nothing_is_free_to_sell():
@@ -351,110 +377,95 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
     assert rows[0]["fee_amount"] == 0.5
 
 
-def test_execute_hype_skips_without_credentials(monkeypatch):
-    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", None)
-    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", None)
-    p = _portfolio({"HYPE": 50.0})
+def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):
+    """P&L history needs what the order actually got, not the rebalance-time quote."""
+    monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 7)
+    rows = []
+    monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
 
-    results = p._execute_hype(-10.0, "sell", {"HYPE": 48.0}, dry_run=False)
-
-    assert results[0] == {"symbol": "HYPE/USDC", "side": "sell", "amount": 10.0, "skipped": True}
-
-
-def test_execute_hype_reports_connection_failure(monkeypatch):
-    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
-    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("hyperliquid unreachable")
-    monkeypatch.setattr(pf, "create_hyperliquid", boom)
-    p = _portfolio({"HYPE": 50.0})
-
-    results = p._execute_hype(10.0, "buy", {"HYPE": 48.0}, dry_run=False)
-
-    assert "hyperliquid unreachable" in results[0]["error"]
-
-
-def test_execute_hype_reports_order_failure(monkeypatch):
-    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
-    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
-    hl = MagicMock()
-    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
-    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("Order has zero size")
-    monkeypatch.setattr(pf, "place_order", boom)
-    p = _portfolio({"HYPE": 50.0})
-    p.balance = MagicMock()
-    p.balance.get_hyperliquid_free_balance.return_value = 10_000.0
-
-    results = p._execute_hype(10.0, "buy", {"HYPE": 48.0}, dry_run=False)
-
-    assert "Order has zero size" in results[0]["error"]
-
-
-def test_execute_hype_buy_is_capped_by_hyperliquid_usdc(monkeypatch):
-    """Hyperliquid is funded separately and the bot cannot move USDC to it, so a buy sized
-    off the pooled portfolio must be cut to what that wallet can pay — including the
-    slippage headroom a market buy is submitted with — instead of being rejected."""
-    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
-    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
-    hl = MagicMock()
-    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
-    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
-
-    placed = []
-    monkeypatch.setattr(pf, "place_order",
-                        lambda exchange, symbol, side, amount, dry_run, price=None:
-                        placed.append(amount) or {"id": "hl1", "status": "closed"})
-
-    p = _portfolio({"HYPE": 5.0})
-    p.balance = MagicMock()
-    p.balance.get_hyperliquid_free_balance.return_value = 480.0
-
-    p._execute_hype(amount=50.0, side="buy", prices={"HYPE": 48.0}, dry_run=False)
-
-    p.balance.get_hyperliquid_free_balance.assert_called_once_with("USDC")
-    assert placed[0] == pytest.approx(480.0 / (48.0 * 1.005), rel=1e-4)
-    assert placed[0] < 50.0, "the plan's size must not survive an underfunded wallet"
-
-
-def test_execute_hype_buy_skips_when_hyperliquid_has_no_usdc(monkeypatch):
-    """No USDC on Hyperliquid → skip cleanly rather than post an order it cannot pay for."""
-    monkeypatch.setattr(pf, "HYPERLIQUID_PRIVATE_KEY", "x")
-    monkeypatch.setattr(pf, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xagent")
-    hl = MagicMock()
-    hl.amount_to_precision = lambda symbol, amount: f"{float(amount):.6f}"
-    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a, **kw: hl)
-
-    placed = []
-    monkeypatch.setattr(pf, "place_order", lambda *a, **kw: placed.append(a) or {"id": "x"})
-
-    p = _portfolio({"HYPE": 5.0})
-    p.balance = MagicMock()
-    p.balance.get_hyperliquid_free_balance.return_value = 0.0
-
-    results = p._execute_hype(amount=50.0, side="buy", prices={"HYPE": 48.0}, dry_run=False)
-
-    assert placed == []
-    assert results[0]["error"] == pf.ERR_SIZE_BELOW_PRECISION
-
-
-def test_binance_outage_still_persists_and_reports_hyperliquid_fills(monkeypatch, live_portfolio):
-    """Regression: execute_rebalance returned early when create_binance raised, jumping past
-    _persist_trades. A HYPE order that had already filled on Hyperliquid was dropped from the
-    trade history and never reached the user's report."""
-    live_portfolio.portfolio = {"HYPE": 50.0, "BTC": 0.02, "USDC": 1000.0}
-    live_portfolio.targets = {"HYPE": 10.0, "BTC": 80.0, "USDC": 10.0}
-    monkeypatch.setattr(live_portfolio, "fetch_live_data",
-                        lambda: ({"HYPE": 48.0, "BTC": 50_000.0, "USDC": 1.0},
-                                 {"HYPE": 2400.0, "BTC": 1000.0, "USDC": 1000.0}, 4400.0))
-    monkeypatch.setattr(
-        pf.Portfolio, "_execute_hype",
-        lambda self, amount, side, prices, dry_run: [
-            {"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "id": "hl1"}],
+    _portfolio({})._persist_trades(
+        [
+            {"symbol": "ETH/USDC", "side": "sell", "amount": 1.0, "id": "a",
+             "average": 2490.0, "cost": 2490.0},
+            {"symbol": "BTC/USDC", "side": "buy", "amount": 0.0099, "id": "b",
+             "average": 50_500.0, "cost": 500.0},
+            {"symbol": "ETH/BTC", "side": "sell", "amount": 0.4, "id": "c",
+             "average": 0.05, "cost": 0.02},
+        ],
+        {"ETH": 2500.0, "BTC": 50_000.0},
     )
+
+    assert [(r["price"], r["usd_value"]) for r in rows] == [
+        (2490.0, 2490.0),
+        (50_500.0, 500.0),
+        (2500.0, pytest.approx(1000.0)),  # cross fill is in BTC; valued at the USD quote
+    ]
+
+
+def _hype_portfolio(monkeypatch, live_portfolio, holdings: dict, targets: dict):
+    live_portfolio.portfolio = holdings
+    live_portfolio.targets = targets
+    prices = {"HYPE": 48.0, "USDC": 1.0}
+    values = {s: amount * prices[s] for s, amount in holdings.items()}
+    monkeypatch.setattr(live_portfolio, "fetch_live_data",
+                        lambda: (prices, values, sum(values.values())))
+    return live_portfolio
+
+
+def test_execute_rebalance_sells_hype_on_binance(monkeypatch, live_portfolio):
+    p = _hype_portfolio(monkeypatch, live_portfolio,
+                        {"HYPE": 50.0, "USDC": 1000.0}, {"HYPE": 10.0, "USDC": 90.0})
+    ex = FakeExchange(free={"HYPE": 50.0, "USDC": 1000.0}, markets={"HYPE/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+    rows = []
+    monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
+
+    out = p.execute_rebalance(dry_run=False)
+
+    [(symbol, side, amount)] = ex.orders
+    assert (symbol, side) == ("HYPE/USDC", "sell")
+    assert 0 < float(amount) <= 50.0
+    assert [(r["symbol"], r["status"]) for r in rows] == [("HYPE/USDC", "filled")]
+    assert "HYPE/USDC" in out
+
+
+def test_execute_rebalance_buys_hype_on_binance_once_it_has_an_allocation(monkeypatch, live_portfolio):
+    """A 0% target plans no HYPE leg; setting one buys it with Binance USDC."""
+    monkeypatch.setattr(pf, "REBALANCE_RESERVE_PCT", 0.0)
+    p = _hype_portfolio(monkeypatch, live_portfolio,
+                        {"HYPE": 0.0, "USDC": 1000.0}, {"HYPE": 0.0, "USDC": 100.0})
+    ex = FakeExchange(free={"USDC": 1000.0}, markets={"HYPE/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+
+    assert p.execute_rebalance(dry_run=False) == "✅ Portfolio is balanced — no trades needed."
+    assert ex.orders == []
+
+    p.targets = {"HYPE": 50.0, "USDC": 50.0}
+    p.execute_rebalance(dry_run=False)
+
+    [(symbol, side, cost)] = ex.orders
+    assert (symbol, side) == ("HYPE/USDC", "buy")
+    assert cost == pytest.approx(500.0)
+
+
+def test_eth_left_on_arbitrum_is_reported_not_traded(monkeypatch):
+    """Nothing moves coins between venues: an ETH sell the Binance balance can't cover
+    names Arbitrum as where the rest sits, and sends no order there."""
+    ex = FakeExchange(free={"ETH": 0.0}, markets={"ETH/USDC": {}})
+    p = _portfolio({"ETH": 2.0})
+    p.venues = {"binance": {"ETH": 0.0}, "arbitrum": {"ETH": 2.0}}
+
+    results = p._execute_sells(ex, {"ETH": 1.5}, {"ETH": 3000.0}, dry_run=False)
+
+    assert ex.orders == []
+    assert results[0]["error"] == "zero balance"
+    assert results[1]["held_on"] == "arbitrum"
+    assert results[1]["amount"] == pytest.approx(1.5)
+
+
+def test_binance_outage_records_every_planned_leg_including_hype(monkeypatch, live_portfolio):
+    p = _hype_portfolio(monkeypatch, live_portfolio,
+                        {"HYPE": 50.0, "USDC": 1000.0}, {"HYPE": 10.0, "USDC": 90.0})
 
     def boom(*args, **kwargs):
         raise RuntimeError("dns failure")
@@ -462,13 +473,10 @@ def test_binance_outage_still_persists_and_reports_hyperliquid_fills(monkeypatch
     rows = []
     monkeypatch.setattr(pf, "record_trade", lambda **kwargs: rows.append(kwargs))
 
-    out = live_portfolio.execute_rebalance(dry_run=False)
+    out = p.execute_rebalance(dry_run=False)
 
     assert "Failed to connect to Binance" in out
-    assert "HYPE/USDC" in out, "the Hyperliquid fill must still be reported"
-    recorded = {(r["symbol"], r["status"]) for r in rows}
-    assert ("HYPE/USDC", "filled") in recorded
-    assert ("BTC/USDC", "error") in recorded, "the unattempted Binance leg is auditable too"
+    assert [(r["symbol"], r["status"]) for r in rows] == [("HYPE/USDC", "error")]
 
 
 def test_execute_rebalance_refuses_without_binance_credentials(monkeypatch):
@@ -485,6 +493,15 @@ def test_execute_rebalance_refuses_on_degraded_balances(live_portfolio):
 
     assert "Balance fetch failed (kraken)" in out
     assert "refusing to trade" in out
+
+
+def test_execute_rebalance_names_a_symbol_missing_from_targets(live_portfolio):
+    live_portfolio.targets = {"USDC": 100.0}
+
+    out = live_portfolio.execute_rebalance(dry_run=True)
+
+    assert "No target set for BTC" in out
+    assert "refusing to rebalance" in out
 
 
 def test_execute_rebalance_reports_a_balanced_portfolio(monkeypatch, live_portfolio):
@@ -517,45 +534,6 @@ def test_execute_rebalance_reports_binance_connection_failure(monkeypatch, live_
     assert "Failed to connect to Binance" in live_portfolio.execute_rebalance(dry_run=True)
 
 
-def test_execute_rebalance_routes_hype_to_hyperliquid(monkeypatch, live_portfolio):
-    live_portfolio.portfolio = {"HYPE": 50.0, "USDC": 1000.0}
-    live_portfolio.targets = {"HYPE": 10.0, "USDC": 90.0}
-    monkeypatch.setattr(live_portfolio, "fetch_live_data",
-                        lambda: ({"HYPE": 48.0, "USDC": 1.0},
-                                 {"HYPE": 2400.0, "USDC": 1000.0}, 3400.0))
-    hype_calls = []
-    monkeypatch.setattr(
-        pf.Portfolio, "_execute_hype",
-        lambda self, amount, side, prices, dry_run: hype_calls.append((side, amount))
-        or [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "id": "hl1"}],
-    )
-
-    def no_binance(*args, **kwargs):
-        raise AssertionError("HYPE-only rebalance must not open a Binance session")
-    monkeypatch.setattr(pf, "create_binance", no_binance)
-
-    out = live_portfolio.execute_rebalance(dry_run=True)
-
-    assert [side for side, _ in hype_calls] == ["sell"]
-    assert "HYPE/USDC" in out
-
-
-def test_execute_rebalance_routes_a_hype_buy_to_hyperliquid(monkeypatch, live_portfolio):
-    live_portfolio.portfolio = {"HYPE": 5.0, "USDC": 1000.0}
-    live_portfolio.targets = {"HYPE": 50.0, "USDC": 50.0}
-    monkeypatch.setattr(live_portfolio, "fetch_live_data",
-                        lambda: ({"HYPE": 48.0, "USDC": 1.0},
-                                 {"HYPE": 240.0, "USDC": 1000.0}, 1240.0))
-    hype_calls = []
-    monkeypatch.setattr(
-        pf.Portfolio, "_execute_hype",
-        lambda self, amount, side, prices, dry_run: hype_calls.append((side, amount))
-        or [{"symbol": "HYPE/USDC", "side": side, "amount": abs(amount), "id": "hl1"}],
-    )
-
-    live_portfolio.execute_rebalance(dry_run=True)
-
-    assert [side for side, _ in hype_calls] == ["buy"]
 
 
 def test_execute_rebalance_persists_only_live_trades(monkeypatch, live_portfolio):
@@ -653,12 +631,40 @@ def test_cross_pairs_keeps_the_larger_buy_leg_for_usdc_routing():
     assert buys["BTC"] * prices["BTC"] == pytest.approx(700.0, rel=1e-2)
 
 
+def test_binance_failure_mid_rebalance_keeps_the_orders_already_placed(monkeypatch):
+    """The cross-trade filled before fetch_balance failed; losing it would hide a real fill."""
+    class FlakyExchange(FakeExchange):
+        calls = 0
+
+        def fetch_balance(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("binance 503")
+            return super().fetch_balance()
+
+    ex = FlakyExchange(free={"ETH": 1.0, "USDC": 0.0},
+                       markets={"ETH/BTC": {}, "ETH/USDC": {}, "BTC/USDC": {}, "SOL/USDC": {}})
+    monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
+    p = _portfolio({})
+    prices = {"ETH": 2500.0, "BTC": 50_000.0, "SOL": 200.0}
+
+    results, notice = p._execute_binance({"ETH": 0.4}, {"BTC": 0.012, "SOL": 2.0}, prices,
+                                         dry_run=False)
+
+    assert [o[0] for o in ex.orders] == ["ETH/BTC"]
+    assert results[0]["id"] == "ord1", "the placed cross-trade is reported"
+    assert [(r["symbol"], r["side"]) for r in results[1:]] == [("ETH/USDC", "sell"),
+                                                               ("SOL/USDC", "buy")]
+    assert all("binance 503" in r["error"] for r in results[1:])
+    assert "2 leg(s) not attempted" in notice
+
+
 def test_execute_rebalance_buys_a_near_target_on_binance(monkeypatch, live_portfolio):
     """Signal 188 put 22.7% on NEAR; untracked, its share sat in USDC with no leg at all."""
     from data.balance import Balance
 
     live_portfolio.portfolio = Balance.aggregate({Balance.BINANCE: {"USDC": 1000.0}})
-    live_portfolio.targets = {"NEAR": 50.0, "USDC": 50.0}
+    live_portfolio.targets = {symbol: 0.0 for symbol in Balance.TRACKED_SYMBOLS} | {"NEAR": 50.0, "USDC": 50.0}
     prices = {symbol: 1.0 for symbol in Balance.TRACKED_SYMBOLS} | {"NEAR": 5.0}
     values = {symbol: amount * prices[symbol] for symbol, amount in live_portfolio.portfolio.items()}
     monkeypatch.setattr(live_portfolio, "fetch_live_data", lambda: (prices, values, 1000.0))

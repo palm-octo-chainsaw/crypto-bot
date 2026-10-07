@@ -1,10 +1,11 @@
 """Scrape RSPS signal allocations from The Real World."""
 
+import asyncio
 import logging
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
 import pyotp
 
@@ -38,6 +39,20 @@ SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
 DEBUG_SCREENSHOT = os.path.join(DEBUG_DIR, "trw_debug.png")
+BANNER_WAIT_MS = 20000
+# TRW renders message times in the browser's timezone and dates in its locale.
+# Pinning both keeps "Today at 3:09 AM" and "04/07/2026" parseable as UTC,
+# whatever the host is set to.
+BROWSER_CONTEXT = {
+    "viewport": {"width": 1280, "height": 900},
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "timezone_id": "UTC",
+    "locale": "en-US",
+}
+# The scheduled poll and a manual /signal can scrape at once; both read and write
+# the saved session, so a read could load a half-written state.json.
+_SESSION_LOCK = asyncio.Lock()
 
 
 def parse_signal(text: str) -> dict[str, float]:
@@ -173,13 +188,19 @@ async def _login(page) -> None:
     await page.wait_for_timeout(5000)
 
 
-async def _handle_device_limit(page) -> None:
-    """Dismiss device-limit modal by logging out the oldest non-current sessions."""
+async def _device_limit_showing(page) -> bool:
+    return await page.get_by_text("Device Limit Reached", exact=False).count() > 0
+
+
+async def _handle_device_limit(page) -> bool:
+    """Dismiss device-limit modal by logging out the oldest non-current sessions.
+
+    Returns whether the modal is gone afterwards.
+    """
     logger.info("[TRW] Device limit modal detected — removing old sessions...")
 
     for _ in range(5):
-        modal = page.get_by_text("Device Limit Reached", exact=False)
-        if await modal.count() == 0:
+        if not await _device_limit_showing(page):
             break
 
         logout_btns = page.locator('button:has-text("Logout")')
@@ -196,11 +217,32 @@ async def _handle_device_limit(page) -> None:
     if await close_btn.count() > 0:
         try:
             await close_btn.first.click(force=True, timeout=3000)
-        except Exception:
-            pass
+        except Exception as err:
+            logger.warning("[TRW] Device limit close button click failed: %s", err)
     await page.wait_for_timeout(2000)
 
+    if await _device_limit_showing(page):
+        logger.warning("[TRW] Device limit modal still showing after cleanup")
+        return False
     logger.info("[TRW] Device limit resolved")
+    return True
+
+
+async def _clear_device_limit(page) -> None:
+    """Clear the device-limit modal if it is up, and reload the channel behind it.
+
+    Raises when the modal survives the reload: extraction would otherwise find
+    no messages and fail with an error that hides the cause, and a fresh login
+    would save the blocked session for the next run to reuse.
+    """
+    if not await _device_limit_showing(page):
+        return
+    await _handle_device_limit(page)
+    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(5000)
+    if await _device_limit_showing(page):
+        await page.screenshot(path=DEBUG_SCREENSHOT, full_page=False)
+        raise RuntimeError(f"TRW device limit modal would not clear. Check {DEBUG_SCREENSHOT}")
 
 
 def _normalize_timestamp(raw: str) -> str:
@@ -210,8 +252,10 @@ def _normalize_timestamp(raw: str) -> str:
         "Today at 3:09 AM"     -> "2026-04-18 03:09"
         "Yesterday at 11:30 PM" -> "2026-04-17 23:30"
         "04/07/2026"            -> "2026-04-07"
+
+    Relies on the browser rendering in UTC and en-US (see BROWSER_CONTEXT).
     """
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     lower = raw.lower().strip()
 
     # "Today at 3:09 AM" / "Yesterday at 11:30 PM"
@@ -254,14 +298,19 @@ async def _message_body_text(element) -> str:
     contains "chat"/"message"), and ``inner_text`` raises "Node is not an
     HTMLElement" on those. Treat such nodes as empty so the scan continues to
     real messages instead of aborting the whole extraction.
+
+    Any other failure propagates: skipping a real message whose text could not
+    be read would let the scan walk on to an older, stale signal.
     """
     body = element.locator("span.custom-break-words")
     try:
         if await body.count() > 0:
             return await body.first.inner_text()
         return await element.inner_text()
-    except Exception:
-        return ""
+    except Exception as err:
+        if "not an HTMLElement" in str(err):
+            return ""
+        raise
 
 
 async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
@@ -273,7 +322,8 @@ async def _extract_signal(page) -> tuple[dict[str, float], str | None]:
     signal_text = None
     signal_time = None
     signal_element = None
-    for idx in range(count - 1, max(count - 20, -1), -1):
+    # The newest 20 messages; range()'s stop is exclusive.
+    for idx in range(count - 1, max(count - 21, -1), -1):
         element = messages.nth(idx)
         text = await _message_body_text(element)
         if SIGNAL_MARKER in text.lower():
@@ -326,84 +376,89 @@ async def _is_logged_out(page) -> bool:
 
 
 async def _open_channel(p, *, save_session: bool = True):
-    """Open signal channel, handling login and device limits. Returns (browser, context, page)."""
+    """Open signal channel, handling login and device limits. Returns (browser, context, page).
+
+    The browser is the caller's to close only once this returns; on any failure
+    it is closed here, since the caller never receives it.
+    """
     session_path = os.path.abspath(SESSION_DIR)
     state_file = os.path.join(session_path, "state.json")
 
-    # Try reusing saved session first
-    if os.path.isfile(state_file):
-        logger.info("[TRW] Reusing saved session...")
+    browser = None
+    try:
+        # Try reusing saved session first
+        if os.path.isfile(state_file):
+            logger.info("[TRW] Reusing saved session...")
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(storage_state=state_file, **BROWSER_CONTEXT)
+            page = await context.new_page()
+            await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(3000)
+
+            # Check if we're still logged in. A live session stays on the /chat/ route;
+            # an expired one redirects to the login form ("Log In To The Real World" with
+            # email/password inputs). Detect via several signals rather than one brittle
+            # text match — the prior "LOGIN TO YOUR ACCOUNT" string no longer matches the
+            # current login page, which left expired sessions undetected (0 messages found).
+            if await _is_logged_out(page):
+                logger.info("[TRW] Session expired, logging in again...")
+                await browser.close()
+                browser = None
+            else:
+                await _clear_device_limit(page)
+                return browser, context, page
+
+        # Fresh login
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            storage_state=state_file,
-            viewport={"width": 1280, "height": 900},
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
+        context = await browser.new_context(**BROWSER_CONTEXT)
         page = await context.new_page()
         await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(3000)
+        await _login(page)
 
-        # Check if we're still logged in. A live session stays on the /chat/ route;
-        # an expired one redirects to the login form ("Log In To The Real World" with
-        # email/password inputs). Detect via several signals rather than one brittle
-        # text match — the prior "LOGIN TO YOUR ACCOUNT" string no longer matches the
-        # current login page, which left expired sessions undetected (0 messages found).
-        if await _is_logged_out(page):
-            logger.info("[TRW] Session expired, logging in again...")
+        await _clear_device_limit(page)
+
+        # Save session for reuse
+        if save_session:
+            os.makedirs(session_path, exist_ok=True)
+            await context.storage_state(path=state_file)
+            logger.info("[TRW] Session saved to %s", session_path)
+
+        return browser, context, page
+    except BaseException:
+        if browser is not None:
             await browser.close()
-        else:
-            # Handle device limit if it appears
-            device_limit = page.get_by_text("Device Limit Reached", exact=False)
-            if await device_limit.count() > 0:
-                await _handle_device_limit(page)
-                await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-                await page.wait_for_timeout(5000)
-            return browser, context, page
-
-    # Fresh login
-    browser = await p.chromium.launch(headless=True)
-    context = await browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                   "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    )
-    page = await context.new_page()
-    await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-    await _login(page)
-
-    # Handle device limit if it appears after login
-    device_limit = page.get_by_text("Device Limit Reached", exact=False)
-    if await device_limit.count() > 0:
-        await _handle_device_limit(page)
-        await page.goto(TRW_SIGNAL_URL, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(5000)
-
-    # Save session for reuse
-    if save_session:
-        os.makedirs(session_path, exist_ok=True)
-        await context.storage_state(path=state_file)
-        logger.info("[TRW] Session saved to %s", session_path)
-
-    return browser, context, page
+        raise
 
 
 async def _jump_to_latest(page) -> None:
-    """Click 'Viewing older messages' banner if present to jump to the latest messages."""
-    btn = page.get_by_text("Viewing older messages", exact=False)
-    if await btn.count() > 0:
-        logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
-        # Chat input overlay can intercept pointer events; force the click past it.
-        await btn.first.click(force=True)
-        await page.wait_for_timeout(5000)
-    else:
-        logger.info("[TRW] Already viewing latest messages")
+    """Click 'Viewing older messages' banner if present to jump to the latest messages.
+
+    The channel can open on old history before the banner renders. A one-shot
+    check on a slow load finds no banner, reads the old history as the latest,
+    and returns a stale signal, so wait for the banner before concluding.
+    """
+    btn = page.get_by_text("Viewing older messages", exact=False).first
+    try:
+        await btn.wait_for(state="visible", timeout=BANNER_WAIT_MS)
+    except PwTimeout:
+        logger.info("[TRW] No 'Viewing older messages' banner after %ds — assuming latest",
+                    BANNER_WAIT_MS // 1000)
+        return
+    logger.info("[TRW] 'Viewing older messages' banner found — clicking to jump to latest")
+    # Chat input overlay can intercept pointer events; force the click past it.
+    await btn.click(force=True)
+    await page.wait_for_timeout(5000)
 
 
 async def fetch_signal() -> tuple[dict[str, float], str | None]:
     if not all([TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET]):
         raise ValueError("TRW_EMAIL, TRW_PASSWORD, and TRW_TOTP_SECRET must be set in .env")
 
+    async with _SESSION_LOCK:
+        return await _fetch_signal()
+
+
+async def _fetch_signal() -> tuple[dict[str, float], str | None]:
     browser = None
     page = None
     async with async_playwright() as p:

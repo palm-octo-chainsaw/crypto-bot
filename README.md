@@ -1,11 +1,11 @@
 # crypto-telegram-bot
 
-A Telegram bot for tracking a multi-source crypto portfolio, executing rebalancing trades on Binance and Hyperliquid, and automatically fetching signal allocations.
+A Telegram bot for tracking a multi-source crypto portfolio, executing rebalancing trades on Binance, and automatically fetching signal allocations.
 
 ## Features
 
-- **Multi-source balance aggregation** — combines on-chain wallets, Binance, Kraken, and Hyperliquid into a single portfolio view
-- **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance and Hyperliquid
+- **Multi-source balance aggregation** — combines on-chain wallets, Binance, and Kraken into a single portfolio view
+- **Portfolio rebalancing** — computes per-asset deltas against target allocations and executes market orders on Binance
 - **Signal scraping** — fetches RSPS signal allocations via headless browser with TOTP authentication, with timestamp-based deduplication
 - **Stale signal detection** — normalizes relative timestamps and auto-clicks "Viewing older messages" to ensure the latest signal is fetched
 - **Shutdown notifications** — sends a Telegram message when the bot stops
@@ -28,7 +28,7 @@ A Telegram bot for tracking a multi-source crypto portfolio, executing rebalanci
 | BNB | Binance |
 | USDC | Arbitrum (ERC-20) + Binance + Kraken |
 | PAXG | Kraken |
-| HYPE | Hyperliquid spot (balance + trading) |
+| HYPE | Binance |
 
 **Leverage tokens** (Arbitrum): `BTCBULL2X`, `BTCBULL4X`, `ETHBULL4X`
 
@@ -49,17 +49,16 @@ Create a `.env` file:
 # Telegram
 BOT_TOKEN=your_telegram_bot_token
 CHAT_ID=your_chat_id
+# Who may run commands (optional, comma-separated Telegram user ids).
+# When set, these users can also use the bot in a private chat.
+ALLOWED_USER_IDS=123456789
 
-# EVM wallet (Arbitrum token balances + Hyperliquid spot)
+# EVM wallet (Arbitrum token balances)
 META_MASK=your_evm_wallet_address
 
 # Binance (balance tracking + trade execution)
 BINANCE_API_KEY=your_binance_api_key
 BINANCE_API_SECRET=your_binance_api_secret
-
-# Hyperliquid (HYPE spot trading)
-HYPERLIQUID_PRIVATE_KEY=your_wallet_private_key
-HYPERLIQUID_ACCOUNT_ADDRESS=your_hyperliquid_account_address
 
 # Kraken (balance tracking only)
 KRAKEN_API_KEY=your_kraken_api_key
@@ -69,6 +68,9 @@ KRAKEN_API_SECRET=your_kraken_api_secret
 TRW_EMAIL=your_email
 TRW_PASSWORD=your_password
 TRW_TOTP_SECRET=your_totp_secret
+
+# Discord (optional) — new signals are also posted to this channel webhook
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 # Trade settings (optional)
 MIN_TRADE_USD=1.0
@@ -159,7 +161,7 @@ run.py                          # Entry point, registers Telegram handlers
 ├── portfolio.py                # Portfolio state, rebalance logic, trade execution
 ├── data/
 │   ├── balance.py              # Multi-source balance aggregation
-│   ├── trading.py              # ccxt trade routing (Binance + Hyperliquid)
+│   ├── trading.py              # ccxt trade routing (Binance)
 │   ├── database.py             # PostgreSQL signal/trade/snapshot storage
 │   ├── prices.py               # CoinGecko price fetching
 │   └── scraper.py              # Signal scraper (Playwright + TOTP)
@@ -178,8 +180,9 @@ The bot computes the delta between each asset's current allocation and its targe
 
 `/rebalance` shows the exact trades needed. `/rebalance live` executes them as market orders:
 
-1. **HYPE** is traded first on Hyperliquid (HYPE/USDC)
-2. **All other assets** are traded on Binance using available Binance USDC
+All assets are traded on Binance using available Binance USDC. Balances on Kraken or
+Arbitrum count toward the portfolio, but a leg that needs them is reported as sitting
+on that venue rather than traded.
 
 Sells execute before buys to free up USDC. Trade routing prefers direct pairs and falls back to routing through USDC.
 
@@ -193,7 +196,7 @@ Binance rejects undersized orders with `-1013`, and a flat local floor can't pre
 `MANUAL_ASSETS` (default `PAXG`) lists assets the portfolio tracks but no execution venue trades.
 PAXG balances are read from Kraken, yet Binance rejects PAXG orders with
 `-2010 "not permitted for this account"`, and the bot has no Kraken execution path — `krakenex` is
-read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade on Kraken by hand.
+read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade by hand (PAXG on Kraken).
 The sells funding them still run, so the USDC is waiting on Binance to be moved across.
 
 ## Signal Polling

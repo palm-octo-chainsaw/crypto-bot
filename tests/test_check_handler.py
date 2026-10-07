@@ -33,3 +33,5 @@ async def test_check_replies_with_generic_error_when_listener_raises(monkeypatch
     update.message.reply_text.assert_awaited_once()
     sent = update.message.reply_text.call_args[0][0]
     assert "Something went wrong" in sent
+    assert "RuntimeError: price fetch failed" in sent
+    assert update.message.reply_text.call_args.kwargs.get("parse_mode") == "HTML"

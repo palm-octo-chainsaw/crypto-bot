@@ -3,8 +3,8 @@ import portfolio as pf
 from data.trading import place_order, place_market_buy_cost
 
 
-class HyperliquidLikeExchange:
-    """Answers with the fill alone, the way Hyperliquid does.
+class FillOnlyExchange:
+    """Answers with the fill alone, with no coin or side.
 
     ccxt has no coin or side to parse out of that response, so both come back
     None — the shape that produced "✅ `23.33` None" in Telegram.
@@ -40,7 +40,7 @@ class BinanceLikeExchange:
 
 
 def test_market_order_keeps_the_symbol_we_asked_for():
-    order = place_order(HyperliquidLikeExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
+    order = place_order(FillOnlyExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
 
     assert order["symbol"] == "HYPE/USDC"
     assert order["side"] == "sell"
@@ -48,7 +48,7 @@ def test_market_order_keeps_the_symbol_we_asked_for():
 
 
 def test_cost_buy_keeps_the_symbol_we_asked_for():
-    order = place_market_buy_cost(HyperliquidLikeExchange(), "HYPE/USDC", 50.0, dry_run=False)
+    order = place_market_buy_cost(FillOnlyExchange(), "HYPE/USDC", 50.0, dry_run=False)
 
     assert order["symbol"] == "HYPE/USDC"
     assert order["side"] == "buy"
@@ -63,7 +63,7 @@ def test_venue_supplied_identity_wins():
 
 
 def test_trade_line_names_the_asset():
-    order = place_order(HyperliquidLikeExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
+    order = place_order(FillOnlyExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
 
     line = pf._format_trade_line(order)
 
@@ -78,7 +78,7 @@ def test_persisted_trade_carries_symbol_and_price(monkeypatch):
     monkeypatch.setattr(pf, "get_latest_signal_id", lambda: 7)
     monkeypatch.setattr(pf, "record_trade", lambda **kwargs: recorded.append(kwargs))
 
-    order = place_order(HyperliquidLikeExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
+    order = place_order(FillOnlyExchange(), "HYPE/USDC", "sell", 23.33, dry_run=False)
     p = pf.Portfolio.__new__(pf.Portfolio)
     p._persist_trades([order], {"HYPE": 42.5})
 

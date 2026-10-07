@@ -9,6 +9,11 @@ KRAKEN_API_KEY = getenv("KRAKEN_API_KEY")
 KRAKEN_API_SECRET = getenv("KRAKEN_API_SECRET")
 BOT_TOKEN = getenv("BOT_TOKEN", "")
 CHAT_ID = getenv("CHAT_ID")
+# Telegram user ids allowed to run commands, comma-separated. Empty means anyone
+# in CHAT_ID may; set it once CHAT_ID is a group whose members should not trade.
+ALLOWED_USER_IDS = frozenset(
+    int(uid) for uid in getenv("ALLOWED_USER_IDS", "").split(",") if uid.strip()
+)
 DATABASE_URL = getenv("DATABASE_URL", "")
 META_MASK = getenv("META_MASK", "")
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -48,9 +53,9 @@ SNAPSHOT_GATE_MIN_RATIO = min(max(float(getenv("SNAPSHOT_GATE_MIN_RATIO", "0.2")
 # Only apply that gate against a recent baseline, so a genuine collapse cannot
 # lock snapshots out forever: once the last clean row ages past this, writes resume.
 SNAPSHOT_GATE_MAX_AGE_HOURS = float(getenv("SNAPSHOT_GATE_MAX_AGE_HOURS", "48"))
+# Optional: new signals are also posted here. Empty disables Discord.
+DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL", "")
 TRW_EMAIL = getenv("TRW_EMAIL")
 TRW_PASSWORD = getenv("TRW_PASSWORD")
 TRW_TOTP_SECRET = getenv("TRW_TOTP_SECRET")
-HYPERLIQUID_PRIVATE_KEY = getenv("HYPERLIQUID_PRIVATE_KEY")
-HYPERLIQUID_ACCOUNT_ADDRESS = getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
 TRW_SIGNAL_URL = "https://app.jointherealworld.com/chat/01GGDHGV32QWPG7FJ3N39K4FME/01H83QAX979K9R7QTMH74ATR8C"

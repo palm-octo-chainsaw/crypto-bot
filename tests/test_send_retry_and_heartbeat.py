@@ -79,7 +79,9 @@ async def test_error_handler_tells_the_chat(fake_context, fake_update):
 
     await ch.error_handler(fake_update, fake_context)
 
-    assert fake_update.message.replies == [ch.GENERIC_ERROR_REPLY]
+    assert len(fake_update.message.replies) == 1
+    assert fake_update.message.replies[0].startswith(ch.GENERIC_ERROR_REPLY)
+    assert "ValueError: boom" in fake_update.message.replies[0]
 
 
 @pytest.mark.asyncio

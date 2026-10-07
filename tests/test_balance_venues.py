@@ -133,8 +133,6 @@ def test_venue_balances_keep_holdings_separate_and_aggregate_back(monkeypatch, b
                         lambda self, symbol: {"BTC": 0.1, "USDC": 200.0}.get(symbol, 0.0))
     monkeypatch.setattr(Balance, "_arbitrum_usdc", lambda self: 50.0)
     monkeypatch.setattr(Balance, "_arbitrum_eth", lambda self: 1.0)
-    monkeypatch.setattr(Balance, "get_hyperliquid_balances",
-                        lambda self: {"HYPE": 20.0, "USDC": 5.0})
     bare_balance.kraken_client = FakeKrakenClient(
         result={"error": [], "result": {"XXBT": "0.9", "PAXG": "0.5"}})
 
@@ -142,7 +140,6 @@ def test_venue_balances_keep_holdings_separate_and_aggregate_back(monkeypatch, b
 
     assert venues[Balance.BINANCE]["BTC"] == pytest.approx(0.1)
     assert venues[Balance.KRAKEN]["BTC"] == pytest.approx(0.9)
-    assert venues[Balance.HYPERLIQUID]["HYPE"] == pytest.approx(20.0)
     assert venues[Balance.ARBITRUM]["ETH"] == pytest.approx(1.0)
     # PAXG is Kraken-only — Binance rejects its orders (-2010), so crediting a Binance
     # balance would let the planner size a leg that venue will never fill.
@@ -152,7 +149,7 @@ def test_venue_balances_keep_holdings_separate_and_aggregate_back(monkeypatch, b
     total = Balance.aggregate(venues)
     assert set(total) == set(Balance.TRACKED_SYMBOLS)
     assert total["BTC"] == pytest.approx(1.0)
-    assert total["USDC"] == pytest.approx(255.0)  # 200 Binance + 50 Arbitrum + 5 Hyperliquid
+    assert total["USDC"] == pytest.approx(250.0)  # 200 Binance + 50 Arbitrum
 
 
 def test_spot_balance_equals_the_sum_of_its_venues(monkeypatch, bare_balance):
@@ -160,7 +157,6 @@ def test_spot_balance_equals_the_sum_of_its_venues(monkeypatch, bare_balance):
     monkeypatch.setattr(Balance, "get_binance_balance", lambda self, symbol: 2.0)
     monkeypatch.setattr(Balance, "_arbitrum_usdc", lambda self: 3.0)
     monkeypatch.setattr(Balance, "_arbitrum_eth", lambda self: 4.0)
-    monkeypatch.setattr(Balance, "get_hyperliquid_balances", lambda self: {"HYPE": 7.0})
 
     assert bare_balance.get_spot_balance() == Balance.aggregate(bare_balance.get_venue_balances())
 
@@ -253,16 +249,6 @@ def test_refresh_binance_balances_rereads_the_account(bare_balance):
     assert bare_balance.get_binance_balance("btc") == pytest.approx(0.6)
     assert bare_balance.binance_client.calls == 1
 
-
-def test_hyperliquid_free_balance_skips_other_coins(monkeypatch, bare_balance):
-    """The wallet holds several coins — the scan must walk past the ones we didn't ask for."""
-    monkeypatch.setattr(
-        Balance, "_fetch_hyperliquid_spot_balances",
-        lambda self: [{"coin": "USDC", "total": "500.0", "hold": "0.0"},
-                      {"coin": "PURR", "total": "12.0", "hold": "0.0"}],
-    )
-
-    assert bare_balance.get_hyperliquid_free_balance("HYPE") == 0.0
 
 
 def test_raw_kraken_balance_degrades_without_a_client(bare_balance):

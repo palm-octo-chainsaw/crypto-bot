@@ -1,15 +1,14 @@
 from utils.helpers import load_json, setup_logging
 from data.prices import fetch_prices
 from data.trading import (
-    create_binance, create_hyperliquid, find_direct_pair, place_order,
-    place_market_buy_cost, apply_precision, effective_min_usd, HYPERLIQUID_SLIPPAGE,
+    create_binance, find_direct_pair, place_order,
+    place_market_buy_cost, apply_precision, effective_min_usd,
 )
 from data.database import record_snapshot, record_trade, get_latest_signal_id
 from summary import Summary
 from data.balance import Balance
 from constants import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
-    HYPERLIQUID_PRIVATE_KEY, HYPERLIQUID_ACCOUNT_ADDRESS, META_MASK,
     MIN_TRADE_USD, REBALANCE_RESERVE_PCT, MANUAL_ASSETS,
 )
 
@@ -19,6 +18,8 @@ logger = setup_logging('info')
 STABLE = "USDC"
 REBALANCE_THRESHOLD_PCT = 3.0
 ERR_SIZE_BELOW_PRECISION = "size below precision"
+# Below a cent, a cross-matched leg counts as fully executed rather than leftover.
+MATCHED_USD = 0.01
 
 
 def _is_directly_tradeable(exchange, token: str, stable: str) -> bool:
@@ -52,7 +53,7 @@ def _format_trade_line(trade: dict) -> str:
 
     if status == "manual":
         return (f"✋ MANUAL {side} {symbol} (${trade['usd_value']:.2f}) — "
-                f"no bot venue trades {symbol}, execute on Kraken")
+                f"no bot venue trades {symbol}, execute it manually")
     if status == "dust":
         return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${trade.get('min_usd', MIN_TRADE_USD):.2f} minimum"
     if status == "skipped":
@@ -66,6 +67,30 @@ def _format_trade_line(trade: dict) -> str:
     if status == "dry_run":
         return f"📋 {side} {qty} {symbol}"
     return f"✅ {side} {qty} {symbol} — id: {trade.get('id', '?')}"
+
+
+def _trade_valuation(order: dict, prices: dict) -> tuple[float | None, float | None]:
+    """USD (price, value) of a filled order, from the fill where the venue reports it.
+
+    Against STABLE the fill's average price and cost are already USD. A cross-pair
+    fill is priced in its quote coin (ETH/BTC in BTC), so it falls back to the
+    rebalance-time USD price of the base.
+    """
+    base, _, quote = (order.get("symbol") or "").partition("/")
+    amount = order.get("amount") or 0
+    if quote == STABLE:
+        price = order.get("average") or order.get("price") or prices.get(base)
+        usd_value = order.get("cost") or (amount * price if price else None)
+    else:
+        price = prices.get(base)
+        usd_value = amount * price if price else None
+    return price, usd_value
+
+
+def _unattempted_legs(legs, reason: str) -> list:
+    return [{"symbol": f"{token}/{STABLE}", "side": side, "amount": amount, "error": reason}
+            for side, planned in legs
+            for token, amount in planned.items()]
 
 
 class Portfolio:
@@ -144,7 +169,7 @@ class Portfolio:
     def evaluate_symbol(self, values: dict, total_value: float) -> None:
         for symbol, value in values.items():
             current_pct = (value / total_value) * 100
-            target_pct = float(self.targets.get(symbol, 0.0))
+            target_pct = float(self.targets[symbol])
             diff = current_pct - target_pct
             arrow = "🔺" if diff > 0 else "🔻"
 
@@ -162,7 +187,7 @@ class Portfolio:
     def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
         usable_value = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
         return {
-            symbol: ((self.targets.get(symbol, 0.0) / 100) * usable_value - values[symbol]) / prices[symbol]
+            symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol]) / prices[symbol]
                     if prices[symbol] > 0 else 0.0
             for symbol in self.portfolio
         }
@@ -299,11 +324,16 @@ class Portfolio:
                 sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
                 buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
                 free[sell_token] = free_amount - actual_sell
-                if buys[buy_token] * prices[buy_token] < cross_min:
+                # A remainder too small for another cross-trade stays in the plan, so
+                # the USDC route either trades it or reports it as dust; only a fully
+                # matched leg is removed.
+                if buys[buy_token] * prices[buy_token] < MATCHED_USD:
                     buys.pop(buy_token, None)
-                if sells[sell_token] * prices[sell_token] < cross_min:
+                if sells[sell_token] * prices[sell_token] < MATCHED_USD:
                     sells.pop(sell_token, None)
                     break  # this sell_token is done; move to the next
+                if sells[sell_token] * prices[sell_token] < cross_min:
+                    break  # nothing left of this sell_token that another cross could take
         return results
 
     def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:
@@ -432,14 +462,18 @@ class Portfolio:
             status = _trade_status(trade)
             if status not in ("filled", "error"):
                 continue
-            token = (trade.get("symbol") or "").split("/")[0]
+            if status == "filled":
+                price, usd_value = _trade_valuation(trade, prices)
+            else:
+                # Nothing traded, so there is no fill to value.
+                price, usd_value = prices.get((trade.get("symbol") or "").split("/")[0]), None
             record_trade(
                 signal_id=signal_id,
                 symbol=trade.get("symbol") or "",
                 side=trade.get("side") or "",
                 amount=trade.get("amount", 0),
-                price=prices.get(token),
-                usd_value=trade.get("usd_value"),
+                price=price,
+                usd_value=usd_value,
                 status=status,
                 order_id=trade.get("id"),
                 dry_run=False,
@@ -447,50 +481,6 @@ class Portfolio:
                 fee_currency=trade.get("fee_currency"),
                 fee_rate=trade.get("fee_rate"),
             )
-
-    HYPE_PAIR = "HYPE/USDC"
-
-    def _execute_hype(self, amount: float, side: str, prices: dict, dry_run: bool) -> list:
-        """Execute HYPE trade on Hyperliquid. Returns result dicts."""
-        if not HYPERLIQUID_PRIVATE_KEY or not HYPERLIQUID_ACCOUNT_ADDRESS:
-            logger.warning("Hyperliquid credentials not set — skipping HYPE trade")
-            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "skipped": True}]
-
-        try:
-            hl = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
-            hl.hyperliquid_user = META_MASK
-        except Exception as err:
-            logger.error("Failed to connect to Hyperliquid: %s", err)
-            return [{"symbol": self.HYPE_PAIR, "side": side, "amount": abs(amount), "error": str(err)}]
-
-        symbol = self.HYPE_PAIR
-        hype_price = prices.get("HYPE")
-        try:
-            trade_amount = abs(amount)
-            # ccxt fetch_balance queries the agent wallet (HYPERLIQUID_ACCOUNT_ADDRESS),
-            # which holds no funds. Query the master wallet (META_MASK) instead.
-            if side == "sell":
-                free_hype = self.balance.get_hyperliquid_free_balance("HYPE")
-                trade_amount = min(trade_amount, free_hype)
-            else:
-                # Hyperliquid is funded separately and the bot cannot move USDC to it,
-                # so a buy sized off the pooled portfolio is unaffordable here far more
-                # often than not. Cap it at what the wallet can actually pay, slippage
-                # headroom included, instead of posting an order the venue will reject.
-                free_stable = self.balance.get_hyperliquid_free_balance(STABLE)
-                if not hype_price:
-                    raise ValueError("no HYPE price available to size the buy")
-                affordable = free_stable / (hype_price * (1 + HYPERLIQUID_SLIPPAGE))
-                trade_amount = min(trade_amount, affordable)
-            trade_amount = apply_precision(hl, symbol, trade_amount)
-            if trade_amount <= 0:
-                logger.warning("HYPE %s size rounded to 0 — skipping", side)
-                return [{"symbol": symbol, "side": side, "amount": 0, "error": ERR_SIZE_BELOW_PRECISION}]
-            result = place_order(hl, symbol, side, trade_amount, dry_run, price=hype_price)
-            return [result]
-        except Exception as err:
-            logger.error("Hyperliquid HYPE trade error: %s", err)
-            return [{"symbol": symbol, "side": side, "amount": abs(amount), "error": str(err)}]
 
     def execute_rebalance(self, dry_run: bool = True) -> str:
         if not BINANCE_API_KEY or not BINANCE_API_SECRET:
@@ -504,6 +494,14 @@ class Portfolio:
             venues = ", ".join(sorted(self.balance.degraded))
             logger.error("Refusing to rebalance: balances degraded (%s)", venues)
             return f"⚠️ Balance fetch failed ({venues}) — refusing to trade on incomplete holdings."
+
+        missing = sorted(set(self.portfolio) - set(self.targets))
+        if missing:
+            # A tracked symbol with no target would raise KeyError mid-plan; treating
+            # it as 0% instead would sell the whole position on a config typo.
+            logger.error("Refusing to rebalance: no target for %s", ", ".join(missing))
+            return (f"⚠️ No target set for {', '.join(missing)} in config/targets.json "
+                    f"— refusing to rebalance.")
 
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
@@ -520,18 +518,8 @@ class Portfolio:
             return "\n".join(lines)
 
         results = list(skipped)
-
-        # Execute HYPE on Hyperliquid first
-        if "HYPE" in sells:
-            results.extend(self._execute_hype(sells.pop("HYPE"), "sell", prices, dry_run))
-        if "HYPE" in buys:
-            results.extend(self._execute_hype(buys.pop("HYPE"), "buy", prices, dry_run))
-
-        # Execute remaining trades on Binance
-        notice = None
-        if sells or buys:
-            binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
-            results.extend(binance_results)
+        binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
+        results.extend(binance_results)
 
         if not dry_run:
             self._persist_trades(results, prices)
@@ -546,25 +534,36 @@ class Portfolio:
                          dry_run: bool) -> tuple[list, str | None]:
         """Run the Binance legs, returning (results, notice).
 
-        An unreachable Binance is reported per leg rather than by returning early: the
-        Hyperliquid orders above it may already have filled, and bailing out here skipped
-        _persist_trades entirely, dropping those fills from the trade history and from
-        the message the user sees.
+        An unreachable Binance is reported per leg rather than by returning early, so
+        every planned leg still reaches _persist_trades and the message the user sees.
         """
         try:
             exchange = create_binance(BINANCE_API_KEY, BINANCE_API_SECRET)
         except Exception as err:
             logger.error("Failed to connect to Binance: %s", err)
-            unattempted = [
-                {"symbol": f"{token}/{STABLE}", "side": side, "amount": amount,
-                 "error": f"Binance unreachable: {err}"}
-                for side, legs in (("sell", sells), ("buy", buys))
-                for token, amount in legs.items()
-            ]
+            unattempted = _unattempted_legs((("sell", sells), ("buy", buys)),
+                                            f"Binance unreachable: {err}")
             return unattempted, (f"⚠️ Failed to connect to Binance — "
                                  f"{len(unattempted)} leg(s) not attempted. Check logs for details.")
 
-        results = self._execute_cross_pairs(exchange, sells, buys, prices, dry_run)
-        results.extend(self._execute_sells(exchange, sells, prices, dry_run))
-        results.extend(self._execute_buys(exchange, buys, prices, dry_run))
+        # Each stage opens with a fetch_balance(). One that fails leaves the legs it
+        # and later stages would have traded unattempted, but the orders earlier
+        # stages already placed must still reach the results.
+        results = []
+        stages = (
+            (lambda: self._execute_cross_pairs(exchange, sells, buys, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_sells(exchange, sells, prices, dry_run),
+             (("sell", sells), ("buy", buys))),
+            (lambda: self._execute_buys(exchange, buys, prices, dry_run),
+             (("buy", buys),)),
+        )
+        for run, remaining in stages:
+            try:
+                results.extend(run())
+            except Exception as err:
+                logger.exception("Binance stage failed: %s", err)
+                unattempted = _unattempted_legs(remaining, f"Binance error: {err}")
+                notice = f"⚠️ Binance failed mid-rebalance — {len(unattempted)} leg(s) not attempted. Check logs for details."
+                return results + unattempted, notice
         return results, None
