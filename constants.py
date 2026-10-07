@@ -32,6 +32,7 @@ COINGECKO_IDS = {
     "BNB": "binancecoin",
     "PAXG": "pax-gold",
     "HYPE": "hyperliquid",
+    "NEAR": "near",
 }
 MIN_TRADE_USD = float(getenv("MIN_TRADE_USD", "1.0"))
 # Assets tracked in the portfolio that none of the bot's execution venues can trade.

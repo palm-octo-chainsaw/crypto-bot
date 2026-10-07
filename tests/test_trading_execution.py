@@ -151,8 +151,22 @@ def test_create_binance_enables_rate_limiting_and_loads_markets(monkeypatch):
 
     exchange = trading.create_binance("key", "secret")
 
-    assert created["config"] == {"apiKey": "key", "secret": "secret", "enableRateLimit": True}
+    assert created["config"] == {"apiKey": "key", "secret": "secret", "enableRateLimit": True,
+                                 "options": {"fetchMarkets": {"types": ["spot"]}}}
     assert exchange.loaded is True
+
+
+def test_create_binance_loads_only_spot_so_stock_tickers_cannot_shadow_crypto(monkeypatch):
+    """ccxt loads Binance's tokenized stocks too when it has credentials, and the SUI
+    stock (Sun Communities) replaced the SUI/USDC crypto market: orders went to the
+    equity endpoint and failed with 486213 "Stock trading account not found"."""
+    monkeypatch.setattr(trading.ccxt.binance, "load_markets", lambda self, *a, **kw: None)
+
+    exchange = trading.create_binance("key", "secret")
+
+    assert exchange.options["fetchMarkets"]["types"] == ["spot"]
+    # The rest of ccxt's fetchMarkets defaults survive the override.
+    assert "loadAllOptions" in exchange.options["fetchMarkets"]
 
 
 def test_execute_trade_routes_through_inverted_stable_pairs():

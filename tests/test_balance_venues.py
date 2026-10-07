@@ -278,3 +278,13 @@ def test_raw_kraken_balance_degrades_on_transport_failure(bare_balance):
 
     assert bare_balance.get_raw_kraken_balance() == {}
     assert bare_balance.degraded == {Balance.KRAKEN}
+
+
+def test_every_tracked_symbol_can_be_priced_and_binance_reads_only_tracked_ones():
+    """A tracked symbol without a CoinGecko id fails every price fetch; a Binance symbol
+    outside the tracked set is read and then dropped by aggregate()."""
+    from constants import COINGECKO_IDS
+
+    assert set(Balance.TRACKED_SYMBOLS) <= set(COINGECKO_IDS)
+    assert Balance.BINANCE_SYMBOLS <= set(Balance.TRACKED_SYMBOLS)
+    assert "NEAR" in Balance.BINANCE_SYMBOLS
