@@ -20,8 +20,10 @@ on:
     paths:
       - Dockerfile
       - requirements.lock
-  # python:3.14-slim moves under us, and an entry unread for 7 days is evicted.
-  # A weekly rebuild covers both without waiting for a release to go cold.
+  # An entry unread for 7 days is evicted; a weekly rebuild keeps it alive without
+  # waiting for a release to go cold. The base image is pinned by digest, so it no
+  # longer moves under the cache — a Dependabot bump changes the Dockerfile and
+  # re-warms through the paths filter above.
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:

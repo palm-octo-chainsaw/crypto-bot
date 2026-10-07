@@ -1,4 +1,10 @@
-FROM python:3.14-slim
+# Pinned by digest. The 3.14-slim tag is republished every few days, and each new
+# base digest invalidates every layer on top of it: release builds then miss the
+# cache warm-build-cache.yml left on master, rebuild the 557 MB pip + chromium
+# layer, and the k3s node re-pulls the whole 600 MB image (7m13s at v1.12.1).
+# Dependabot (.github/dependabot.yml) moves the digest in a reviewable PR, and
+# merging it re-warms the cache, since that workflow runs on Dockerfile changes.
+FROM python:3.14-slim@sha256:f85c5697265c178cc6887276c55fe16cf3d14ca35c3df6a5eab3b360534a55d2
 
 WORKDIR /app
 
