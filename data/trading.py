@@ -7,11 +7,20 @@ import ccxt
 logger = logging.getLogger(__name__)
 
 
+# With credentials, ccxt also loads Binance's tokenized US stocks, keyed like spot
+# pairs. A ticker clash then replaces the crypto market: SUI/USDC became Sun
+# Communities stock, so every SUI order went to /sapi/v1/equity/order/place and
+# was rejected with 486213 "Stock trading account not found". The bot only
+# trades crypto spot here, so nothing else is loaded.
+BINANCE_MARKET_TYPES = ["spot"]
+
+
 def create_binance(api_key: str, api_secret: str):
     exchange = ccxt.binance({
         "apiKey": api_key,
         "secret": api_secret,
         "enableRateLimit": True,
+        "options": {"fetchMarkets": {"types": BINANCE_MARKET_TYPES}},
     })
     exchange.load_markets()
     return exchange
