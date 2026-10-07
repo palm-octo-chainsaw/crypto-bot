@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Bumps the pinned base image; merging re-warms the build cache.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    ignore:
+      # Digest and patch updates only; a new Python minor is a deliberate change.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
