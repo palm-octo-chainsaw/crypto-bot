@@ -60,36 +60,11 @@ _SESSION_LOCK = asyncio.Lock()
 
 
 def parse_signal(text: str) -> dict[str, float]:
-    lower = text.lower()
-    # Use rfind so correction messages that quote the original signal at the top
-    # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
-    start = lower.rfind(SIGNAL_MARKER)
-    if start == -1:
+    section = _signal_section(text)
+    if section is None:
         return {}
 
-    section = text[start:]
-    for delimiter in ["Executive Summary", "Associated Data", "———", "─────"]:
-        end = section.find(delimiter)
-        if end > 0:
-            section = section[:end]
-            break
-
-    allocations = {}
-    for match in ALLOCATION_LINE.finditer(section):
-        pct = float(match.group(1))
-        symbol = match.group(2).upper()
-        if symbol not in KNOWN_TOKENS:
-            if not UNLISTED_TICKER.fullmatch(match.group(2)):
-                continue
-            logger.info("Signal names %s, outside the known tokens — kept as a ticker", symbol)
-        if symbol.lower() in CASH_ALIASES:
-            symbol = "USDC"
-        if symbol in allocations:
-            logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, allocations[symbol], pct)
-            allocations[symbol] += pct
-        else:
-            allocations[symbol] = pct
-
+    allocations = _collect_allocations(section)
     total_allocation = sum(allocations.values())
     if total_allocation == 0:
         logger.warning("Parsed allocations sum to 0%% — returning empty")
@@ -105,6 +80,47 @@ def parse_signal(text: str) -> dict[str, float]:
             allocations[symbol] *= factor
 
     return allocations
+
+
+def _signal_section(text: str) -> str | None:
+    # Use rfind so correction messages that quote the original signal at the top
+    # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
+    start = text.lower().rfind(SIGNAL_MARKER)
+    if start == -1:
+        return None
+
+    section = text[start:]
+    for delimiter in ["Executive Summary", "Associated Data", "———", "─────"]:
+        end = section.find(delimiter)
+        if end > 0:
+            return section[:end]
+    return section
+
+
+def _collect_allocations(section: str) -> dict[str, float]:
+    allocations = {}
+    for match in ALLOCATION_LINE.finditer(section):
+        symbol = _allocation_symbol(match.group(2))
+        if symbol is None:
+            continue
+        pct = float(match.group(1))
+        if symbol in allocations:
+            logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, allocations[symbol], pct)
+            allocations[symbol] += pct
+        else:
+            allocations[symbol] = pct
+    return allocations
+
+
+def _allocation_symbol(raw: str) -> str | None:
+    symbol = raw.upper()
+    if symbol not in KNOWN_TOKENS:
+        if not UNLISTED_TICKER.fullmatch(raw):
+            return None
+        logger.info("Signal names %s, outside the known tokens — kept as a ticker", symbol)
+    if symbol.lower() in CASH_ALIASES:
+        return "USDC"
+    return symbol
 
 
 async def _login(page) -> None:
@@ -469,7 +485,7 @@ async def _fetch_signal() -> tuple[dict[str, float], str | None]:
     page = None
     async with async_playwright() as p:
         try:
-            browser, context, page = await _open_channel(p)
+            browser, _, page = await _open_channel(p)
             await page.wait_for_timeout(5000)
 
             await _jump_to_latest(page)
@@ -487,7 +503,7 @@ async def _fetch_signal() -> tuple[dict[str, float], str | None]:
             if saved:
                 logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
             else:
-                logger.error("[TRW] Timeout before page was ready — no screenshot captured (%s)", err)
+                logger.exception("[TRW] Timeout before page was ready — no screenshot captured (%s)", err)
             raise RuntimeError(f"TRW page timed out: {err}") from err
         finally:
             if browser:

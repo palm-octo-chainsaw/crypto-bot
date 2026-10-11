@@ -1,6 +1,7 @@
 import asyncio
 import html
 import logging
+import math
 import os
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -28,6 +29,7 @@ portfolio = Portfolio()
 
 TARGETS_FILE = "config/targets.json"
 GENERIC_ERROR_REPLY = "⚠️ Something went wrong."
+COMMAND_FAILED_LOG = "Command failed: %s"
 LIVE_REBALANCE_ERROR_REPLY = ("⚠️ Live rebalance failed partway — some trades may already "
                               "have executed. Check Binance before retrying.")
 FETCH_SIGNAL_ERROR_REPLY = "⚠️ Error fetching signal."
@@ -333,7 +335,7 @@ def _format_portfolio_section() -> list[str]:
     try:
         portfolio.update_portfolio()
         _, _, total = portfolio.fetch_live_data()
-        non_zero = {s: v for s, v in portfolio.portfolio.items() if v > 0}
+        non_zero = {s: v for s, v in portfolio.holdings.items() if v > 0}
         for symbol, value in non_zero.items():
             lines.append(f"{symbol}: {value}")
         lines.append(f"Total: ${total:,.2f}")
@@ -414,11 +416,12 @@ def _format_performance_line(label: str, delta: timedelta | None, end_value: flo
         snap = get_earliest_snapshot()
     else:
         snap = get_snapshot_at_or_before(now - delta)
-    # `not > 0` rather than `<= 0` so a NaN baseline is rejected too — it would
-    # otherwise slip through every comparison and render as "-nan%".
-    if snap is None or not snap["total_value_usd"] > 0:
+    if snap is None:
         return f"{label}: insufficient history"
     start_value = snap["total_value_usd"]
+    # A NaN baseline would slip through `<= 0` and render as "-nan%".
+    if math.isnan(start_value) or start_value <= 0:
+        return f"{label}: insufficient history"
     pnl = end_value - start_value
     pct = pnl / start_value * 100
     emoji = "📈" if pnl >= 0 else "📉"
@@ -447,7 +450,7 @@ async def performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         message = _format_performance(arg)
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
@@ -457,7 +460,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         message = _format_info()
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _reply(update, message)
@@ -472,7 +475,7 @@ async def check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         message = portfolio.listener()
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
         return
     await _send_with_retry(update.message.reply_text, message, parse_mode="Markdown")
@@ -505,17 +508,17 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _, _, total = portfolio.fetch_live_data()
         await _reply(update, f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD")
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         portfolio.update_portfolio()
-        lines = [f"{symbol}: {value}" for symbol, value in portfolio.portfolio.items()]
+        lines = [f"{symbol}: {value}" for symbol, value in portfolio.holdings.items()]
         await _reply(update, "💰 *Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
@@ -524,7 +527,7 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
         lines = [f"{symbol}: {value}" for symbol, value in portfolio.balance.get_leverage_balance().items()]
         await _reply(update, "📈 *Leverage Portfolio Balance*:\n\n" + "\n".join(lines))
     except Exception as error:
-        logger.error("Command failed: %s", error, exc_info=True)
+        logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
 
 
@@ -686,14 +689,14 @@ async def fetch_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     except TRWInvalidCredentialsError as error:
         _credentials_invalid = True
-        logger.error("fetch_signal: %s", error)
+        logger.exception("fetch_signal: %s", error)
         await _send_with_retry(
             update.message.reply_text,
             "🔐 TRW rejected credentials. Scrape paused — update TRW_PASSWORD and restart the container."
         )
         return
     except Exception as error:
-        logger.error("Failed to fetch signal: %s", error, exc_info=True)
+        logger.exception("Failed to fetch signal: %s", error)
         await _reply_error(update, FETCH_SIGNAL_ERROR_REPLY, error)
         return
 
@@ -814,10 +817,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_with_retry(
             context.bot.send_message,
             chat_id=CHAT_ID,
-            text=(
-                f"⏳ *TRW rate-limited* — pausing scrape for "
-                f"{int(duration.total_seconds() // 60)} min."
-            ),
+            text=f"⏳ *TRW rate-limited* — pausing scrape for {int(duration.total_seconds() // 60)} min.",
             parse_mode="Markdown",
         )
         return
@@ -825,14 +825,11 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _credentials_invalid = True
         _poll_failure_count += 1
         _last_poll_status = "paused (invalid credentials)"
-        logger.error("poll_signal: %s — pausing scrape until restart", error)
+        logger.exception("poll_signal: %s — pausing scrape until restart", error)
         await _send_with_retry(
             context.bot.send_message,
             chat_id=CHAT_ID,
-            text=(
-                "🔐 *TRW rejected credentials* — scrape paused.\n"
-                "Update `TRW_PASSWORD` and restart the container."
-            ),
+            text="🔐 *TRW rejected credentials* — scrape paused.\nUpdate `TRW_PASSWORD` and restart the container.",
             parse_mode="Markdown",
         )
         return
@@ -840,9 +837,9 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _scrape_failure_count += 1
         _poll_failure_count += 1
         _last_poll_status = f"scrape failed: {type(error).__name__}"
-        logger.error(
+        logger.exception(
             "poll_signal scrape failed (%d consecutive): %s",
-            _scrape_failure_count, error, exc_info=True,
+            _scrape_failure_count, error,
         )
         if _scrape_failure_count == SCRAPE_FAILURE_ALERT_THRESHOLD:
             await _send_with_retry(
@@ -912,7 +909,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _alert_price_rate_limit(context, error)
         return
     except Exception as error:
-        logger.error("poll_signal rebalance failed: %s", error, exc_info=True)
+        logger.exception("poll_signal rebalance failed: %s", error)
         _last_poll_status = "rebalance failed"
         await _send_with_retry(
             context.bot.send_message,

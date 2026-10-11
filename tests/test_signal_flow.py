@@ -174,7 +174,8 @@ async def test_fetch_signal_applies_new_signal(monkeypatch, fake_context, stub_p
     assert applied["allocs"] == new_signal
     assert recorded["ts"] == "2026-04-30 10:00"
     out = _replies(update)[-1]
-    assert "Targets updated" in out and "BTC: 70.0%" in out
+    assert "Targets updated" in out
+    assert "BTC: 70.0%" in out
 
 
 @pytest.mark.asyncio

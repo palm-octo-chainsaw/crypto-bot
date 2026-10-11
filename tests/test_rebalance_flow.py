@@ -32,7 +32,7 @@ class FakeExchange:
 
 def _portfolio(holdings: dict) -> pf.Portfolio:
     p = pf.Portfolio.__new__(pf.Portfolio)
-    p.portfolio = holdings
+    p.holdings = holdings
     return p
 
 
@@ -75,15 +75,18 @@ def test_format_trade_line_manual_names_no_exchange():
 def test_format_trade_line_dust_names_the_minimum():
     line = pf._format_trade_line({"symbol": "ETH/USDC", "side": "sell", "amount": 0.0001,
                                   "usd_value": 0.25, "min_usd": 5.0, "dust": True})
-    assert "DUST ETH/USDC ($0.25)" in line and "below $5.00 minimum" in line
+    assert "DUST ETH/USDC ($0.25)" in line
+    assert "below $5.00 minimum" in line
 
 
 def test_format_trade_line_unavailable_names_the_venue_holding_the_coins():
     line = pf._format_trade_line({"symbol": "BTC/USDC", "side": "sell", "amount": 0.4,
                                   "usd_value": 20_000.0, "venue": "binance",
                                   "held_on": "kraken", "unavailable": True})
-    assert "BTC/USDC" in line and "$20000.00" in line
-    assert "not executable on binance" in line and "sits on kraken" in line
+    assert "BTC/USDC" in line
+    assert "$20000.00" in line
+    assert "not executable on binance" in line
+    assert "sits on kraken" in line
 
 
 def test_format_trade_line_skipped_and_error():
@@ -124,7 +127,8 @@ def test_plan_trades_splits_sells_buys_dust_and_manual(monkeypatch):
     statuses = {t["symbol"]: pf._trade_status(t) for t in skipped}
     assert statuses == {"PAXG": "manual", "SOL": "dust"}
     # USDC is the stable itself and DOGE has no price — neither is planned.
-    assert "DOGE" not in sells and "DOGE" not in buys
+    assert "DOGE" not in sells
+    assert "DOGE" not in buys
 
 
 def test_calculate_rebalance_lists_buy_and_sell_legs():
@@ -140,8 +144,10 @@ def test_calculate_rebalance_lists_buy_and_sell_legs():
 
     plan = "\n".join(p.summary.rebalances)
     assert "Rebalance Plan" in plan
-    assert "Buy [" in plan and "$BTC" in plan
-    assert "Sell [" in plan and "$ETH" in plan
+    assert "Buy [" in plan
+    assert "$BTC" in plan
+    assert "Sell [" in plan
+    assert "$ETH" in plan
 
 
 def test_cross_pairs_returns_early_without_both_sides():
@@ -163,8 +169,10 @@ def test_cross_pairs_skips_when_matched_value_is_below_the_venue_minimum():
 
     results = p._execute_cross_pairs(ex, sells, buys, {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
-    assert sells == {"ETH": 0.4} and buys == {"BTC": 0.0002}
+    assert results == []
+    assert ex.orders == []
+    assert sells == {"ETH": 0.4}
+    assert buys == {"BTC": 0.0002}
 
 
 def test_cross_pairs_leaves_a_sub_minimum_remainder_for_usdc_routing():
@@ -198,7 +206,8 @@ def test_cross_pairs_skips_when_nothing_is_free_to_sell():
     results = p._execute_cross_pairs(ex, {"ETH": 0.4}, {"BTC": 0.02},
                                      {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
+    assert results == []
+    assert ex.orders == []
 
 
 def test_cross_pairs_buy_side_sizes_the_order_in_the_base_token():
@@ -226,8 +235,10 @@ def test_cross_pairs_reports_precision_failure_without_trading():
 
     results = p._execute_cross_pairs(ex, sells, buys, {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
-    assert sells == {"ETH": 0.4} and buys == {"BTC": 0.02}
+    assert results == []
+    assert ex.orders == []
+    assert sells == {"ETH": 0.4}
+    assert buys == {"BTC": 0.02}
 
 
 def test_cross_pairs_records_order_rejection_as_an_error_leg():
@@ -252,7 +263,8 @@ def test_cross_pairs_never_trades_a_token_against_itself():
 
     results = p._execute_cross_pairs(ex, {"ETH": 0.4}, {"ETH": 0.4}, {"ETH": 2500.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
+    assert results == []
+    assert ex.orders == []
 
 
 def test_cross_pairs_skips_when_free_balance_makes_the_leg_dust():
@@ -266,7 +278,8 @@ def test_cross_pairs_skips_when_free_balance_makes_the_leg_dust():
     results = p._execute_cross_pairs(ex, {"ETH": 0.4}, {"BTC": 0.02},
                                      {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
+    assert results == []
+    assert ex.orders == []
 
 
 def test_cross_pairs_skips_when_precision_rounds_the_size_to_zero():
@@ -280,7 +293,8 @@ def test_cross_pairs_skips_when_precision_rounds_the_size_to_zero():
     results = p._execute_cross_pairs(ex, {"ETH": 0.4}, {"BTC": 0.02},
                                      {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
+    assert results == []
+    assert ex.orders == []
 
 
 def test_sells_and_buys_return_early_when_nothing_is_planned():
@@ -403,7 +417,7 @@ def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):
 
 
 def _hype_portfolio(monkeypatch, live_portfolio, holdings: dict, targets: dict):
-    live_portfolio.portfolio = holdings
+    live_portfolio.holdings = holdings
     live_portfolio.targets = targets
     prices = {"HYPE": 48.0, "USDC": 1.0}
     values = {s: amount * prices[s] for s, amount in holdings.items()}
@@ -512,7 +526,7 @@ def test_execute_rebalance_reports_a_balanced_portfolio(monkeypatch, live_portfo
 def test_execute_rebalance_reports_nothing_executable(monkeypatch, live_portfolio):
     """Every leg is manual or dust → report them instead of claiming balance."""
     monkeypatch.setattr(pf, "MANUAL_ASSETS", {"PAXG"})
-    live_portfolio.portfolio = {"PAXG": 0.5, "USDC": 1000.0}
+    live_portfolio.holdings = {"PAXG": 0.5, "USDC": 1000.0}
     live_portfolio.targets = {"PAXG": 90.0, "USDC": 10.0}
     monkeypatch.setattr(live_portfolio, "fetch_live_data",
                         lambda: ({"PAXG": 3000.0, "USDC": 1.0},
@@ -569,7 +583,8 @@ def test_cross_pairs_skips_a_leg_planned_at_zero(monkeypatch):
     results = p._execute_cross_pairs(ex, {"ETH": 0.0}, {"BTC": 0.02},
                                      {"ETH": 2500.0, "BTC": 50_000.0}, dry_run=False)
 
-    assert results == [] and ex.orders == []
+    assert results == []
+    assert ex.orders == []
 
 
 def test_listener_reports_drift_and_records_a_snapshot(monkeypatch):
@@ -591,7 +606,8 @@ def test_listener_reports_drift_and_records_a_snapshot(monkeypatch):
     out = p.listener()
 
     assert p.send_rebalance is True
-    assert "Rebalance Needed" in out and "Rebalance Plan" in out
+    assert "Rebalance Needed" in out
+    assert "Rebalance Plan" in out
     assert snapshots[0]["signal_id"] == 3
     assert snapshots[0]["partial"] is False
 
@@ -614,7 +630,8 @@ def test_listener_flags_a_partial_snapshot_when_a_venue_is_degraded(monkeypatch)
 
     out = p.listener()
 
-    assert "Partial snapshot" in out and "kraken" in out
+    assert "Partial snapshot" in out
+    assert "kraken" in out
     assert snapshots[0]["partial"] is True
 
 
@@ -663,10 +680,10 @@ def test_execute_rebalance_buys_a_near_target_on_binance(monkeypatch, live_portf
     """Signal 188 put 22.7% on NEAR; untracked, its share sat in USDC with no leg at all."""
     from data.balance import Balance
 
-    live_portfolio.portfolio = Balance.aggregate({Balance.BINANCE: {"USDC": 1000.0}})
+    live_portfolio.holdings = Balance.aggregate({Balance.BINANCE: {"USDC": 1000.0}})
     live_portfolio.targets = {symbol: 0.0 for symbol in Balance.TRACKED_SYMBOLS} | {"NEAR": 50.0, "USDC": 50.0}
     prices = {symbol: 1.0 for symbol in Balance.TRACKED_SYMBOLS} | {"NEAR": 5.0}
-    values = {symbol: amount * prices[symbol] for symbol, amount in live_portfolio.portfolio.items()}
+    values = {symbol: amount * prices[symbol] for symbol, amount in live_portfolio.holdings.items()}
     monkeypatch.setattr(live_portfolio, "fetch_live_data", lambda: (prices, values, 1000.0))
     ex = FakeExchange(free={"USDC": 1000.0}, markets={"NEAR/USDC": {}})
     monkeypatch.setattr(pf, "create_binance", lambda *a, **kw: ex)
