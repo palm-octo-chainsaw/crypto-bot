@@ -278,27 +278,35 @@ class Portfolio:
             return results
         free = dict(exchange.fetch_balance().get("free", {}))
 
-        # Both dicts lose fully-matched legs inside the loop, so iterate over copies.
+        # sells loses fully-matched legs inside the loop, so iterate over a copy.
         for sell_token in list(sells):  # NOSONAR S7504: copy needed, sells is mutated
-            for buy_token in list(buys):  # NOSONAR S7504: copy needed, buys is mutated
-                if sell_token == buy_token:
-                    continue
-                leg = self._plan_cross_leg(exchange, sell_token, buy_token, sells, buys, prices, free)
-                if leg is None:
-                    continue
+            results.extend(self._match_sell_leg(exchange, sell_token, sells, buys, prices, free, dry_run))
+        return results
 
-                symbol, side, amount, actual_sell, cross_min = leg
-                try:
-                    order = place_order(exchange, symbol, side, amount, dry_run)
-                except Exception as err:
-                    logger.error("Cross trade error %s->%s via %s: %s", sell_token, buy_token, symbol, err)
-                    results.append({"symbol": symbol, "side": side, "amount": amount, "error": str(err)})
-                    continue
+    def _match_sell_leg(self, exchange, sell_token: str, sells: dict, buys: dict, prices: dict,
+                        free: dict, dry_run: bool) -> list:
+        """Cross-trade one sell leg against each buy leg until the sell leg is used up."""
+        results = []
+        # buys loses fully-matched legs inside the loop, so iterate over a copy.
+        for buy_token in list(buys):  # NOSONAR S7504: copy needed, buys is mutated
+            if sell_token == buy_token:
+                continue
+            leg = self._plan_cross_leg(exchange, sell_token, buy_token, sells, buys, prices, free)
+            if leg is None:
+                continue
 
-                results.append(order)
-                if self._settle_cross_leg(sell_token, buy_token, actual_sell, cross_min,
-                                          sells, buys, prices, free):
-                    break
+            symbol, side, amount, actual_sell, cross_min = leg
+            try:
+                order = place_order(exchange, symbol, side, amount, dry_run)
+            except Exception as err:
+                logger.error("Cross trade error %s->%s via %s: %s", sell_token, buy_token, symbol, err)
+                results.append({"symbol": symbol, "side": side, "amount": amount, "error": str(err)})
+                continue
+
+            results.append(order)
+            if self._settle_cross_leg(sell_token, buy_token, actual_sell, cross_min,
+                                      sells, buys, prices, free):
+                break
         return results
 
     def _plan_cross_leg(self, exchange, sell_token: str, buy_token: str, sells: dict, buys: dict,
