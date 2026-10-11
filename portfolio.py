@@ -278,8 +278,9 @@ class Portfolio:
             return results
         free = dict(exchange.fetch_balance().get("free", {}))
 
-        for sell_token in list(sells.keys()):
-            for buy_token in list(buys.keys()):
+        # Both dicts lose fully-matched legs inside the loop, so iterate over copies.
+        for sell_token in list(sells):  # NOSONAR S7504: copy needed, sells is mutated
+            for buy_token in list(buys):  # NOSONAR S7504: copy needed, buys is mutated
                 if sell_token == buy_token:
                     continue
                 leg = self._plan_cross_leg(exchange, sell_token, buy_token, sells, buys, prices, free)
@@ -566,9 +567,8 @@ class Portfolio:
             logger.error("Failed to connect to Binance: %s", err)
             unattempted = _unattempted_legs((("sell", sells), ("buy", buys)),
                                             f"Binance unreachable: {err}")
-            message = (f"⚠️ Failed to connect to Binance — {len(unattempted)} leg(s) "
-                       "not attempted. Check logs for details.")
-            return unattempted, message
+            leg_count = len(unattempted)
+            return unattempted, f"⚠️ Failed to connect to Binance — {leg_count} leg(s) not attempted. Check logs for details."
 
         # Each stage opens with a fetch_balance(). One that fails leaves the legs it
         # and later stages would have traded unattempted, but the orders earlier
