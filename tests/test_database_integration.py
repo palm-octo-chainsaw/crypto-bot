@@ -47,7 +47,8 @@ def test_init_db_is_idempotent(db):
 
 def test_record_signal_returns_id(db):
     sid = db.record_signal({"BTC": 60.0, "ETH": 40.0}, message_timestamp="2026-06-26 00:12")
-    assert isinstance(sid, int) and sid > 0
+    assert isinstance(sid, int)
+    assert sid > 0
     assert db.get_latest_signal_id() == sid
     assert db.get_latest_allocations() == {"BTC": 60.0, "ETH": 40.0}
     assert db.get_latest_message_timestamp() == "2026-06-26 00:12"
@@ -191,8 +192,10 @@ def test_record_trade_and_recent(db):
     db.record_trade(sid, "ETH", "sell", 0.5, 3000.0, 1500.0, "filled", "oid-2", dry_run=True)
     trades = db.get_recent_trades(limit=5)
     assert len(trades) == 2
-    assert trades[0]["symbol"] == "ETH" and trades[0]["dry_run"] is True
-    assert trades[1]["symbol"] == "BTC" and trades[1]["dry_run"] is False
+    assert trades[0]["symbol"] == "ETH"
+    assert trades[0]["dry_run"] is True
+    assert trades[1]["symbol"] == "BTC"
+    assert trades[1]["dry_run"] is False
 
 
 def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, monkeypatch):

@@ -21,7 +21,7 @@ def _replies(update):
 def stub_portfolio(monkeypatch):
     fake = MagicMock()
     fake.fetch_live_data.return_value = ({}, {}, 1234.56)
-    fake.portfolio = {"BTC": 0.5, "USDC": 100.0}
+    fake.holdings = {"BTC": 0.5, "USDC": 100.0}
     fake.targets = {"BTC": 60.0, "USDC": 40.0}
     monkeypatch.setattr(ch, "portfolio", fake)
     return fake
@@ -71,7 +71,8 @@ async def test_status_shows_credentials_paused_and_cooldown(fake_context, monkey
 
     out = _replies(update)[0]
     assert "credentials invalid" in out
-    assert "rate-limit cooldown" in out and "24 min remaining" in out
+    assert "rate-limit cooldown" in out
+    assert "24 min remaining" in out
 
 
 def test_get_poll_jobs_without_job_queue():
@@ -87,7 +88,8 @@ def test_signal_section_degrades_when_database_unreachable(monkeypatch):
     monkeypatch.setattr(ch, "get_latest_allocations", boom)
 
     out = "\n".join(ch._format_signal_section())
-    assert "unavailable" in out and "no db" in out
+    assert "unavailable" in out
+    assert "no db" in out
 
 
 def test_connectivity_arbitrum_error(monkeypatch, stub_portfolio):
@@ -106,7 +108,8 @@ def test_trades_section_degrades_when_query_fails(monkeypatch):
     monkeypatch.setattr(ch, "get_recent_trades", boom)
 
     out = "\n".join(ch._format_trades_section())
-    assert "unavailable" in out and "relation trades" in out
+    assert "unavailable" in out
+    assert "relation trades" in out
 
 
 def test_performance_line_reports_gain(monkeypatch):
@@ -218,7 +221,8 @@ async def test_get_targets_lists_targets_and_total(fake_context, stub_portfolio)
     await ch.get_targets(update, fake_context)
 
     out = _replies(update)[0]
-    assert "BTC: 60.0%" in out and "USDC: 40.0%" in out
+    assert "BTC: 60.0%" in out
+    assert "USDC: 40.0%" in out
     assert "Total: 100.0%" in out
 
 
@@ -284,7 +288,8 @@ async def test_get_spot_balance_lists_holdings(fake_context, stub_portfolio):
     await ch.get_spot_balance(update, fake_context)
 
     out = _replies(update)[0]
-    assert "BTC: 0.5" in out and "USDC: 100.0" in out
+    assert "BTC: 0.5" in out
+    assert "USDC: 100.0" in out
 
 
 @pytest.mark.asyncio

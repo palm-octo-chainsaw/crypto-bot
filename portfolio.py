@@ -102,7 +102,7 @@ class Portfolio:
         self.targets: dict = load_json("config/targets.json")
         self.balance.track_on_binance(self.targets)
         self.venues: dict = self.balance.get_venue_balances()
-        self.portfolio: dict = Balance.aggregate(self.venues)
+        self.holdings: dict = Balance.aggregate(self.venues)
         self.send_rebalance: bool = False
 
     def get_targets(self) -> dict:
@@ -121,7 +121,7 @@ class Portfolio:
         left sitting in the stable coin. Callers surface this instead.
         """
         return {symbol: pct for symbol, pct in self.targets.items()
-                if pct and symbol not in self.portfolio}
+                if pct and symbol not in self.holdings}
 
     def _untracked_notice(self) -> str | None:
         untracked = self.untracked_targets()
@@ -138,8 +138,8 @@ class Portfolio:
         # still held until the rebalance sells it.
         self.balance.track_on_binance(self.targets)
         self.venues = self.balance.get_venue_balances()
-        self.portfolio = Balance.aggregate(self.venues)
-        logger.debug("Portfolio updated: %s", self.portfolio)
+        self.holdings = Balance.aggregate(self.venues)
+        logger.debug("Portfolio updated: %s", self.holdings)
 
     def _held_off_venue(self, token: str, venue: str) -> dict[str, float]:
         """How much of `token` sits on venues other than `venue`, keyed by venue.
@@ -167,8 +167,8 @@ class Portfolio:
                 "held_on": ", ".join(sorted(elsewhere)), "unavailable": True}
 
     def fetch_live_data(self) -> tuple[dict, dict, float]:
-        prices = fetch_prices(list(self.portfolio))
-        values = {symbol: amount * prices[symbol] for symbol, amount in self.portfolio.items()}
+        prices = fetch_prices(list(self.holdings))
+        values = {symbol: amount * prices[symbol] for symbol, amount in self.holdings.items()}
         total_value = sum(values.values())
         logger.debug("Total: %s", total_value)
         return prices, values, total_value
@@ -197,7 +197,7 @@ class Portfolio:
         return {
             symbol: ((self.targets[symbol] / 100) * usable_value - values[symbol]) / prices[symbol]
                     if prices[symbol] > 0 else 0.0
-            for symbol in self.portfolio
+            for symbol in self.holdings
         }
 
     def calculate_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
@@ -236,7 +236,7 @@ class Portfolio:
         record_snapshot(
             signal_id=get_latest_signal_id(),
             total_value_usd=total_value,
-            balances=self.portfolio,
+            balances=self.holdings,
             prices=prices,
             values_usd=values,
             targets=self.targets,
@@ -278,71 +278,87 @@ class Portfolio:
             return results
         free = dict(exchange.fetch_balance().get("free", {}))
 
-        for sell_token in list(sells.keys()):
-            for buy_token in list(buys.keys()):
+        # Both dicts lose fully-matched legs inside the loop, so iterate over copies.
+        for sell_token in list(sells):  # NOSONAR S7504: copy needed, sells is mutated
+            for buy_token in list(buys):  # NOSONAR S7504: copy needed, buys is mutated
                 if sell_token == buy_token:
                     continue
-                direct = find_direct_pair(exchange, sell_token, buy_token)
-                if not direct:
+                leg = self._plan_cross_leg(exchange, sell_token, buy_token, sells, buys, prices, free)
+                if leg is None:
                     continue
 
-                symbol, side = direct
-                cross_min = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
-                matched_usd = min(
-                    sells[sell_token] * prices[sell_token],
-                    buys[buy_token] * prices[buy_token],
-                )
-                if matched_usd < cross_min:
-                    continue
-
-                # Free balance on this venue is the authority on what can settle here;
-                # the aggregate portfolio may count coins sitting on Kraken or Arbitrum.
-                free_amount = float(free.get(sell_token, 0.0))
-                if free_amount <= 0:
-                    continue
-                planned_sell = matched_usd / prices[sell_token]
-                actual_sell = min(planned_sell, free_amount)
-                if actual_sell <= 0:
-                    continue
-                if actual_sell * prices[sell_token] < cross_min:
-                    continue  # not enough free balance to make this a non-dust cross-trade
-
-                pair_display = f"{sell_token}->{buy_token} via {symbol}"
-                try:
-                    if side == "sell":
-                        amount = apply_precision(exchange, symbol, actual_sell)
-                    else:
-                        buy_amount_in_buy_token = actual_sell * prices[sell_token] / prices[buy_token]
-                        amount = apply_precision(exchange, symbol, buy_amount_in_buy_token)
-                except Exception as err:
-                    logger.warning("Cross precision error %s: %s", pair_display, err)
-                    continue
-                if amount <= 0:
-                    continue
-
+                symbol, side, amount, actual_sell, cross_min = leg
                 try:
                     order = place_order(exchange, symbol, side, amount, dry_run)
                 except Exception as err:
-                    logger.error("Cross trade error %s: %s", pair_display, err)
+                    logger.error("Cross trade error %s->%s via %s: %s", sell_token, buy_token, symbol, err)
                     results.append({"symbol": symbol, "side": side, "amount": amount, "error": str(err)})
                     continue
 
                 results.append(order)
-                executed_usd = actual_sell * prices[sell_token]
-                sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
-                buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
-                free[sell_token] = free_amount - actual_sell
-                # A remainder too small for another cross-trade stays in the plan, so
-                # the USDC route either trades it or reports it as dust; only a fully
-                # matched leg is removed.
-                if buys[buy_token] * prices[buy_token] < MATCHED_USD:
-                    buys.pop(buy_token, None)
-                if sells[sell_token] * prices[sell_token] < MATCHED_USD:
-                    sells.pop(sell_token, None)
-                    break  # this sell_token is done; move to the next
-                if sells[sell_token] * prices[sell_token] < cross_min:
-                    break  # nothing left of this sell_token that another cross could take
+                if self._settle_cross_leg(sell_token, buy_token, actual_sell, cross_min,
+                                          sells, buys, prices, free):
+                    break
         return results
+
+    def _plan_cross_leg(self, exchange, sell_token: str, buy_token: str, sells: dict, buys: dict,
+                        prices: dict, free: dict) -> tuple | None:
+        """Size a direct cross-trade between two legs, or None when no worthwhile trade exists.
+
+        Returns (symbol, side, order_amount, sell_token_amount, min_usd)."""
+        direct = find_direct_pair(exchange, sell_token, buy_token)
+        if not direct:
+            return None
+
+        symbol, side = direct
+        cross_min = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
+        matched_usd = min(
+            sells[sell_token] * prices[sell_token],
+            buys[buy_token] * prices[buy_token],
+        )
+        if matched_usd < cross_min:
+            return None
+
+        # Free balance on this venue is the authority on what can settle here;
+        # the aggregate portfolio may count coins sitting on Kraken or Arbitrum.
+        free_amount = float(free.get(sell_token, 0.0))
+        if free_amount <= 0:
+            return None
+        actual_sell = min(matched_usd / prices[sell_token], free_amount)
+        if actual_sell <= 0 or actual_sell * prices[sell_token] < cross_min:
+            return None  # not enough free balance to make this a non-dust cross-trade
+
+        if side == "sell":
+            order_amount = actual_sell
+        else:
+            order_amount = actual_sell * prices[sell_token] / prices[buy_token]
+        try:
+            amount = apply_precision(exchange, symbol, order_amount)
+        except Exception as err:
+            logger.warning("Cross precision error %s->%s via %s: %s", sell_token, buy_token, symbol, err)
+            return None
+        if amount <= 0:
+            return None
+        return symbol, side, amount, actual_sell, cross_min
+
+    @staticmethod
+    def _settle_cross_leg(sell_token: str, buy_token: str, actual_sell: float, cross_min: float,
+                          sells: dict, buys: dict, prices: dict, free: dict) -> bool:
+        """Deduct a filled cross-trade from both legs. True when the sell leg is used up."""
+        executed_usd = actual_sell * prices[sell_token]
+        sells[sell_token] = max(0.0, sells[sell_token] - executed_usd / prices[sell_token])
+        buys[buy_token] = max(0.0, buys[buy_token] - executed_usd / prices[buy_token])
+        free[sell_token] = float(free.get(sell_token, 0.0)) - actual_sell
+        # A remainder too small for another cross-trade stays in the plan, so
+        # the USDC route either trades it or reports it as dust; only a fully
+        # matched leg is removed.
+        if buys[buy_token] * prices[buy_token] < MATCHED_USD:
+            buys.pop(buy_token, None)
+        if sells[sell_token] * prices[sell_token] < MATCHED_USD:
+            sells.pop(sell_token, None)
+            return True  # this sell_token is done; move to the next
+        # Nothing left of this sell_token that another cross could take.
+        return sells[sell_token] * prices[sell_token] < cross_min
 
     def _execute_sells(self, exchange, sells: dict, prices: dict, dry_run: bool) -> list:
         """Sell each token's planned amount, capped at what this venue holds free.
@@ -503,7 +519,7 @@ class Portfolio:
             logger.error("Refusing to rebalance: balances degraded (%s)", venues)
             return f"⚠️ Balance fetch failed ({venues}) — refusing to trade on incomplete holdings."
 
-        missing = sorted(set(self.portfolio) - set(self.targets))
+        missing = sorted(set(self.holdings) - set(self.targets))
         if missing:
             # A tracked symbol with no target would raise KeyError mid-plan; treating
             # it as 0% instead would sell the whole position on a config typo.
@@ -551,8 +567,8 @@ class Portfolio:
             logger.error("Failed to connect to Binance: %s", err)
             unattempted = _unattempted_legs((("sell", sells), ("buy", buys)),
                                             f"Binance unreachable: {err}")
-            return unattempted, (f"⚠️ Failed to connect to Binance — "
-                                 f"{len(unattempted)} leg(s) not attempted. Check logs for details.")
+            leg_count = len(unattempted)
+            return unattempted, f"⚠️ Failed to connect to Binance — {leg_count} leg(s) not attempted. Check logs for details."
 
         # Each stage opens with a fetch_balance(). One that fails leaves the legs it
         # and later stages would have traded unattempted, but the orders earlier
