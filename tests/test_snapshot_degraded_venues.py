@@ -18,7 +18,7 @@ def _portfolio(degraded: set[str]) -> pf.Portfolio:
     p.summary = MagicMock()
     p.balance = MagicMock()
     p.balance.degraded = degraded
-    p.portfolio = {"BTC": 0.1}
+    p.holdings = {"BTC": 0.1}
     p.venues = {Balance.BINANCE: {"BTC": 0.1}}
     p.update_portfolio = lambda: None
     p.targets = {"BTC": 100.0}
@@ -72,7 +72,8 @@ def test_rebalance_refuses_to_trade_on_degraded_balances(monkeypatch):
     p.fetch_live_data = lambda: pytest.fail("must not price a portfolio it cannot read")
 
     message = p.execute_rebalance(dry_run=False)
-    assert "refusing to trade" in message and "kraken" in message
+    assert "refusing to trade" in message
+    assert "kraken" in message
 
 
 def test_rebalance_proceeds_when_venues_healthy(monkeypatch):
@@ -81,7 +82,7 @@ def test_rebalance_proceeds_when_venues_healthy(monkeypatch):
     monkeypatch.setattr(pf, "BINANCE_API_SECRET", "s")
 
     p = _portfolio(set())
-    p.portfolio = {"BTC": 0.1, "USDC": 0.0}
+    p.holdings = {"BTC": 0.1, "USDC": 0.0}
     p.targets = {"BTC": 100.0, "USDC": 0.0}
     p.update_portfolio = lambda: None
     p.fetch_live_data = lambda: (

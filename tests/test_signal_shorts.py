@@ -136,7 +136,8 @@ def test_signal_message_lists_shorts_apart_with_the_reason():
     message = ch._format_signal_message({"BTC": 90.0, "SOL": -10.0}, None)
 
     longs, shorts = message.split("🔻")
-    assert "BTC: 90.0%" in longs and "SOL" not in longs
+    assert "BTC: 90.0%" in longs
+    assert "SOL" not in longs
     assert "held in USDC (shorts disabled)" in shorts
     assert "SOL: 10.0% short" in shorts
     assert "Total: 100.0%" in message

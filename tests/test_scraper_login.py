@@ -291,7 +291,9 @@ async def test_login_completes_through_the_totp_modal(monkeypatch):
 
     await _login(page)
 
-    assert typed and typed[0].isdigit() and len(typed[0]) == 6
+    assert typed
+    assert typed[0].isdigit()
+    assert len(typed[0]) == 6
     assert page.screenshots == [], "a clean login takes no debug screenshot"
 
 

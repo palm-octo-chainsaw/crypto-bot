@@ -39,7 +39,7 @@ def _market(min_cost: float | None) -> dict:
 
 def _portfolio(holdings: dict) -> pf.Portfolio:
     p = pf.Portfolio.__new__(pf.Portfolio)
-    p.portfolio = holdings
+    p.holdings = holdings
     p.balance = SimpleNamespace(degraded=set())  # every venue answered
     return p
 

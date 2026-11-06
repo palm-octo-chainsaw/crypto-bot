@@ -30,7 +30,7 @@ class FakeExchange:
 
 def _portfolio(holdings: dict) -> pf.Portfolio:
     p = pf.Portfolio.__new__(pf.Portfolio)
-    p.portfolio = holdings
+    p.holdings = holdings
     return p
 
 

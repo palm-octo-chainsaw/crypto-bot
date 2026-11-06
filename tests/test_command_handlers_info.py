@@ -22,7 +22,7 @@ def stub_portfolio(monkeypatch):
     fake.balance.w3.is_connected.return_value = True
     fake.update_portfolio = MagicMock()
     fake.fetch_live_data.return_value = ({}, {}, 1234.56)
-    fake.portfolio = {"BTC": 0.5, "ETH": 1.0, "USDC": 100.0}
+    fake.holdings = {"BTC": 0.5, "ETH": 1.0, "USDC": 100.0}
     monkeypatch.setattr(ch, "portfolio", fake)
     return fake
 
@@ -52,14 +52,16 @@ def test_poller_section_shows_paused_when_credentials_invalid(monkeypatch):
     monkeypatch.setattr(ch, "_credentials_invalid", True)
     monkeypatch.setattr(ch, "_last_poll_status", "paused (invalid credentials)")
     out = "\n".join(ch._format_poller_section(datetime.now(timezone.utc)))
-    assert "Paused" in out and "invalid" in out
+    assert "Paused" in out
+    assert "invalid" in out
 
 
 def test_poller_section_shows_cooldown(monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(ch, "_rate_limit_until", now + timedelta(minutes=20))
     out = "\n".join(ch._format_poller_section(now))
-    assert "Cooldown:" in out and "20 min" in out
+    assert "Cooldown:" in out
+    assert "20 min" in out
 
 
 def test_signal_section_empty_when_no_db(monkeypatch):
@@ -83,7 +85,8 @@ def test_portfolio_section_handles_exchange_failure(monkeypatch):
     fake.update_portfolio.side_effect = RuntimeError("binance down")
     monkeypatch.setattr(ch, "portfolio", fake)
     out = "\n".join(ch._format_portfolio_section())
-    assert "unavailable" in out and "binance down" in out
+    assert "unavailable" in out
+    assert "binance down" in out
 
 
 def test_connectivity_binance_down(monkeypatch, stub_portfolio):

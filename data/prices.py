@@ -53,7 +53,7 @@ def _fetch_coingecko_prices(symbols: list[str]) -> dict[str, float]:
         )
         response.raise_for_status()
     except RequestException as error:
-        logger.error("Error fetching prices: %s", error)
+        logger.exception("Error fetching prices: %s", error)
         status = getattr(getattr(error, "response", None), "status_code", None)
         if status == 429:
             raise PriceRateLimitError(f"CoinGecko rate-limited: {error}") from error

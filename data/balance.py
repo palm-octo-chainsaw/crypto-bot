@@ -219,11 +219,7 @@ class Balance:
             decimals = contract.functions.decimals().call()
             return balance / (10 ** decimals)
         except Exception:
-            logger.error(
-                "Error fetching token balance for contract %s",
-                token_contract,
-                exc_info=True,
-            )
+            logger.exception("Error fetching token balance for contract %s", token_contract)
             self._mark_degraded(self.ARBITRUM)
             return 0.0
 
@@ -235,7 +231,7 @@ class Balance:
             balance_wei = self.w3.eth.get_balance(Web3.to_checksum_address(META_MASK))
             return float(self.w3.from_wei(balance_wei, 'ether'))
         except Exception:
-            logger.error("Error fetching ETH balance", exc_info=True)
+            logger.exception("Error fetching ETH balance")
             self._mark_degraded(self.ARBITRUM)
             return 0.0
 
@@ -260,7 +256,7 @@ class Balance:
             }
             self._degraded.discard(self.BINANCE)
         except Exception as err:
-            logger.error("Binance account fetch error: %s", err)
+            logger.exception("Binance account fetch error: %s", err)
             self._mark_degraded(self.BINANCE)
             self._binance_balances = {}
 
@@ -289,6 +285,6 @@ class Balance:
                 return {}
             return result["result"]
         except Exception as err:
-            logger.error("Kraken balance fetch error: %s", err)
+            logger.exception("Kraken balance fetch error: %s", err)
             self._mark_degraded(self.KRAKEN)
             return {}

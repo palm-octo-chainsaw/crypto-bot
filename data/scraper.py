@@ -150,20 +150,54 @@ def parse_signal(text: str) -> dict[str, float]:
     Raises AmbiguousSignalError when the text does not say which way a position
     goes, or names one coin on both sides.
     """
-    lower = text.lower()
+    section = _signal_section(text)
+    if section is None:
+        return {}
+
+    longs, shorts = _collect_allocations(section)
+    both = sorted(longs.keys() & shorts.keys())
+    if both:
+        raise AmbiguousSignalError(f"Signal lists {', '.join(both)} as both long and short")
+
+    # Gross: a short's weight is part of the book, so leaving it out of the total
+    # would scale the longs up into the room it takes.
+    total_allocation = sum(longs.values()) + sum(shorts.values())
+    if total_allocation == 0:
+        logger.warning("Parsed allocations sum to 0%% — returning empty")
+        return {}
+
+    factor = 1.0
+    if not (95.0 <= total_allocation <= 105.0):
+        logger.warning(
+            "Parsed allocations sum to %.2f%% (outside [95%%, 105%%]); normalizing to 100%%",
+            total_allocation,
+        )
+        factor = 100.0 / total_allocation
+
+    if shorts:
+        logger.info("Signal shorts %s", ", ".join(f"{s} {pct:.2f}%" for s, pct in shorts.items()))
+    allocations = {symbol: pct * factor for symbol, pct in longs.items()}
+    allocations.update({symbol: -pct * factor if pct else 0.0 for symbol, pct in shorts.items()})
+    return allocations
+
+
+def _signal_section(text: str) -> str | None:
     # Use rfind so correction messages that quote the original signal at the top
     # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
-    start = lower.rfind(SIGNAL_MARKER)
+    start = text.lower().rfind(SIGNAL_MARKER)
     if start == -1:
-        return {}
+        return None
 
     section = text[start:]
     for delimiter in ["Executive Summary", "Associated Data", "———", "─────"]:
         end = section.find(delimiter)
         if end > 0:
-            section = section[:end]
-            break
+            return section[:end]
+    return section
 
+
+def _collect_allocations(section: str) -> tuple[dict[str, float], dict[str, float]]:
+    """Sum the section's allocations into (longs, shorts), both as positive weights."""
     headers = [(m.start(), m.group("side").lower() == "short")
                for m in DIRECTION_HEADER.finditer(section)]
     parsed = [(match, symbol) for match in ALLOCATION_LINE.finditer(section)
@@ -176,40 +210,20 @@ def parse_signal(text: str) -> dict[str, float]:
                              [match for match, _ in group],
                              _in_short_section(headers, line_start))
         for (match, symbol), is_short in zip(group, flags):
-            if is_short and symbol == STABLE:
-                logger.warning("Signal shorts cash (%r) — read as a cash allocation", match.group(0))
-                is_short = False
-            book = books[is_short]
-            pct = float(match.group("pct"))
-            if symbol in book:
-                logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, book[symbol], pct)
-            book[symbol] = book.get(symbol, 0.0) + pct
-    longs, shorts = books[False], books[True]
+            _add_allocation(books, match, symbol, is_short)
+    return books[False], books[True]
 
-    both = sorted(longs.keys() & shorts.keys())
-    if both:
-        raise AmbiguousSignalError(f"Signal lists {', '.join(both)} as both long and short")
 
-    # Gross: a short's weight is part of the book, so leaving it out of the total
-    # would scale the longs up into the room it takes.
-    total_allocation = sum(longs.values()) + sum(shorts.values())
-    if total_allocation == 0:
-        logger.warning("Parsed allocations sum to 0%% — returning empty")
-        return {}
-
-    if not (95.0 <= total_allocation <= 105.0):
-        logger.warning(
-            "Parsed allocations sum to %.2f%% (outside [95%%, 105%%]); normalizing to 100%%",
-            total_allocation,
-        )
-        factor = 100.0 / total_allocation
-        for book in (longs, shorts):
-            for symbol in book:
-                book[symbol] *= factor
-
-    if shorts:
-        logger.info("Signal shorts %s", ", ".join(f"{s} {pct:.2f}%" for s, pct in shorts.items()))
-    return {**longs, **{symbol: -pct if pct else 0.0 for symbol, pct in shorts.items()}}
+def _add_allocation(books: dict[bool, dict[str, float]], match: re.Match,
+                    symbol: str, is_short: bool) -> None:
+    if is_short and symbol == STABLE:
+        logger.warning("Signal shorts cash (%r) — read as a cash allocation", match.group(0))
+        is_short = False
+    book = books[is_short]
+    pct = float(match.group("pct"))
+    if symbol in book:
+        logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, book[symbol], pct)
+    book[symbol] = book.get(symbol, 0.0) + pct
 
 
 async def _login(page) -> None:
@@ -574,7 +588,7 @@ async def _fetch_signal() -> tuple[dict[str, float], str | None]:
     page = None
     async with async_playwright() as p:
         try:
-            browser, context, page = await _open_channel(p)
+            browser, _, page = await _open_channel(p)
             await page.wait_for_timeout(5000)
 
             await _jump_to_latest(page)
@@ -592,7 +606,7 @@ async def _fetch_signal() -> tuple[dict[str, float], str | None]:
             if saved:
                 logger.error("[TRW] Timeout — screenshot saved to %s", DEBUG_SCREENSHOT)
             else:
-                logger.error("[TRW] Timeout before page was ready — no screenshot captured (%s)", err)
+                logger.exception("[TRW] Timeout before page was ready — no screenshot captured (%s)", err)
             raise RuntimeError(f"TRW page timed out: {err}") from err
         finally:
             if browser:
