@@ -53,6 +53,14 @@ def test_record_signal_returns_id(db):
     assert db.get_latest_message_timestamp() == "2026-06-26 00:12"
 
 
+def test_record_signal_keeps_shorts_signed_and_totals_gross(db):
+    sid = db.record_signal({"BTC": 90.0, "SOL": -10.0})
+    with db.get_connection() as conn:
+        total_pct = conn.execute("SELECT total_pct FROM signals WHERE id = %s", (sid,)).fetchone()[0]
+    assert total_pct == 100.0
+    assert db.get_latest_allocations() == {"BTC": 90.0, "SOL": -10.0}
+
+
 def test_snapshot_at_or_before_picks_nearest_older(db):
     now = datetime.now(timezone.utc)
     # Insert two snapshots at known times via the real recorder, then backdate them.

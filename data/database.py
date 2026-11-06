@@ -108,7 +108,9 @@ def _retype_timestamps(conn: psycopg.Connection) -> None:
 
 
 def record_signal(allocations: dict, message_timestamp: str | None = None) -> int:
-    total_pct = sum(allocations.values())
+    """Store a signal's signed allocations (a short is negative)."""
+    # Gross, so a short adds to the book's size rather than cancelling a long.
+    total_pct = sum(abs(pct) for pct in allocations.values())
     with get_connection() as conn:
         signal_id = conn.execute(
             """INSERT INTO signals (timestamp, allocations, total_pct, message_timestamp)
@@ -214,6 +216,11 @@ def get_latest_signal_id() -> int | None:
 
 
 def get_latest_allocations() -> dict | None:
+    """The newest signal's allocations, signed: a short is negative.
+
+    Never hand these to the rebalancer as targets: it trades spot only. Use
+    utils.helpers.split_shorts() to take the shorts out first.
+    """
     with get_connection() as conn:
         row = conn.execute("SELECT allocations FROM signals ORDER BY id DESC LIMIT 1").fetchone()
     return json.loads(row[0]) if row else None
