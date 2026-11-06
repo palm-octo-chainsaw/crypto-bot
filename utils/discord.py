@@ -5,6 +5,7 @@ import time
 import requests
 
 import constants
+from utils.helpers import split_shorts
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +20,19 @@ EMBED_COLOR = 0x2ECC71
 
 def build_signal_payload(allocations: dict, signal_time: str | None) -> dict:
     """Webhook body for a new signal: one embed, one inline field per asset."""
+    longs, shorts = split_shorts(allocations)
     fields = [
         {"name": symbol, "value": f"{pct}%", "inline": True}
-        for symbol, pct in allocations.items()
+        for symbol, pct in longs.items()
+    ] + [
+        {"name": f"🔻 {symbol} short", "value": f"{pct}%", "inline": True}
+        for symbol, pct in shorts.items()
     ]
     embed = {
         "title": "🆕 New RSPS Signal",
         "color": EMBED_COLOR,
         "fields": fields,
-        "footer": {"text": f"Total: {sum(allocations.values())}%"},
+        "footer": {"text": f"Total: {sum(longs.values()) + sum(shorts.values())}%"},
     }
     if signal_time:
         embed["description"] = f"🕐 Signal posted: {signal_time}"

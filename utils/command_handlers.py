@@ -12,8 +12,8 @@ from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ContextTypes, ExtBot, Application
 
 from utils import discord
-from utils.helpers import format_message, write_json
-from portfolio import Portfolio
+from utils.helpers import format_message, split_shorts, write_json
+from portfolio import Portfolio, STABLE
 import constants
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
@@ -195,6 +195,9 @@ async def set_bot_commands(bot: ExtBot) -> None:
 
 async def post_init(application: Application) -> None:
     await set_bot_commands(application.bot)
+    if constants.SHORTS_ENABLED:
+        logger.warning("SHORTS_ENABLED is set, but no venue the bot trades can short — "
+                       "signal shorts stay held in %s", STABLE)
     if CHAT_ID:
         await _send_with_retry(
             application.bot.send_message,
@@ -323,8 +326,11 @@ def _format_signal_section() -> list[str]:
             return lines
         if ts:
             lines.append(f"Posted: {ts}")
-        for symbol, pct in allocations.items():
+        longs, shorts = split_shorts(allocations)
+        for symbol, pct in longs.items():
             lines.append(f"{symbol}: {pct}%")
+        for symbol, pct in shorts.items():
+            lines.append(f"{symbol}: {pct}% short (held in {STABLE})")
     except Exception as err:
         lines.append(f"⚠️ unavailable ({err})")
     return lines
@@ -608,22 +614,45 @@ def _is_older_signal(signal_time: str | None, last_ts: str | None) -> bool:
     return new[0].date() < last[0].date()
 
 
+def _shorts_held_reason() -> str:
+    """Why a signal's shorts sit in the stable coin instead of being traded."""
+    if constants.SHORTS_ENABLED:
+        return "no venue the bot trades can short yet"
+    return "shorts disabled"
+
+
 def _apply_allocations(allocations: dict) -> None:
+    """Point the targets at a signal's longs, holding each short's weight in STABLE.
+
+    The rebalancer trades spot, so a short must never become a target. The coin a
+    signal shorts is still zeroed, so any of it held is sold rather than kept long.
+    """
+    longs, shorts = split_shorts(allocations)
     for symbol in portfolio.targets:
         portfolio.targets[symbol] = 0.0
-    for symbol, pct in allocations.items():
-        portfolio.targets[symbol] = pct
+    portfolio.targets.update(longs)
+    if shorts:
+        held = sum(shorts.values())
+        portfolio.targets[STABLE] = portfolio.targets.get(STABLE, 0.0) + held
+        logger.info("Holding %.2f%% of shorts (%s) in %s: %s", held, ", ".join(shorts),
+                    STABLE, _shorts_held_reason())
     write_json(TARGETS_FILE, portfolio.targets)
 
 
 def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
+    longs, shorts = split_shorts(allocations)
     lines = ["✅ *Targets updated from RSPS Signal*"]
     if signal_time:
         lines.append(f"🕐 Signal posted: {signal_time}")
     lines.append("")
-    for symbol, pct in allocations.items():
+    for symbol, pct in longs.items():
         lines.append(f"{symbol}: {pct}%")
-    lines.append(f"\nTotal: {sum(allocations.values())}%")
+    if shorts:
+        # Sent as Markdown by the poller: no underscores or asterisks in these lines.
+        lines.append(f"\n🔻 Shorts, held in {STABLE} ({_shorts_held_reason()}):")
+        for symbol, pct in shorts.items():
+            lines.append(f"{symbol}: {pct}% short")
+    lines.append(f"\nTotal: {sum(longs.values()) + sum(shorts.values())}%")
     return "\n".join(lines)
 
 

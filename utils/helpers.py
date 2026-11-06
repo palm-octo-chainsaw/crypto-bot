@@ -33,5 +33,12 @@ def setup_logging(level: str) -> Logger:
     return logger
 
 
+def split_shorts(allocations: dict) -> tuple[dict, dict]:
+    """Split signed signal allocations into (longs, shorts), both as positive weights."""
+    longs = {symbol: pct for symbol, pct in allocations.items() if pct >= 0}
+    shorts = {symbol: -pct for symbol, pct in allocations.items() if pct < 0}
+    return longs, shorts
+
+
 def format_message(message: str) -> str:
     return f"```\n{message}```"

@@ -74,6 +74,9 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 
 # Trade settings (optional)
 MIN_TRADE_USD=1.0
+
+# Shorts (optional, default false) — see "Shorts in signals" below
+SHORTS_ENABLED=false
 ```
 
 ### 3. Set target allocations
@@ -204,3 +207,27 @@ The sells funding them still run, so the USDC is waiting on Binance to be moved 
 The bot polls TRW for new RSPS signals every 10 minutes. Each signal's message timestamp is normalized (relative dates like "Today at 3:09 AM" become absolute `2026-04-18 03:09`) and stored in the database. Signals are deduplicated by timestamp to avoid reprocessing stale data. If TRW loads the page at an old scroll position, the scraper clicks the "Viewing older messages" banner to jump to the latest.
 
 When a new signal is detected, targets are updated and the auto-rebalance only fires if any asset drifts more than 3% from the new targets. Otherwise the signal is applied silently and trades are skipped.
+
+### Shorts in signals
+
+Signals can call shorts. The parser reads each one as a negative weight, in any of these forms:
+`10% SOL Short`, `10% SOL (SHORT)`, `10% Short SOL`, `Short: 10% SOL`, `-10% SOL`, or lines under a
+`Shorts:` heading (up to the next `Longs:` heading). Signals are stored exactly as written, shorts
+included, so a signal that only changes its shorts still counts as new.
+
+The bot only trades spot, and Binance spot cannot short, so a short is never traded: its weight is
+added to the USDC target, and the coin it names gets a 0% target, so any of it already held is sold
+rather than kept as a long. Telegram, Discord, and `/info` list shorts separately and give the reason.
+
+The parser never resolves a doubtful line toward a long, because reading a short as a long buys the
+coin the signal is betting against. When it can't tell which side an allocation is on (e.g.
+`80% BTC, 10% SOL short` on one line), when one coin is listed as both long and short, or when a
+short names no coin, the whole signal is rejected and the targets stay as they were. The failure
+counts as a failed scrape (alerted on the third in a row) and shows in `/fetch_signal`.
+
+The 95–105% total check uses the gross total (longs + shorts), so a short's weight is never spread
+across the longs.
+
+`SHORTS_ENABLED` turns on short trading once a venue that supports shorts is set up. No such venue
+exists in the bot yet, so turning it on now only changes the reason shown (and logs a warning at
+startup): shorts are still held in USDC.

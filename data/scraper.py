@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 from datetime import datetime, timedelta, timezone
+from itertools import groupby
 from playwright.async_api import async_playwright, TimeoutError as PwTimeout
 import pyotp
 
@@ -14,7 +15,25 @@ from constants import TRW_EMAIL, TRW_PASSWORD, TRW_TOTP_SECRET, TRW_SIGNAL_URL
 logger = logging.getLogger(__name__)
 
 SIGNAL_MARKER = "rsps signal"
-ALLOCATION_LINE = re.compile(r"([\d.]+)%\s+(\w+)", re.IGNORECASE)
+# A sign attached to the number ("-10% SOL") marks a short; a bullet ("- 40% BTC")
+# is kept apart from it by its space. A direction word between the percentage and
+# the coin ("10% Short SOL") is skipped, so the coin is read rather than the word.
+ALLOCATION_LINE = re.compile(
+    r"(?P<sign>(?<![\w.])[-−])?(?P<pct>\d*\.?\d+)%\s+"
+    r"(?:(?:long|short)(?:s|ed|ing)?\s+)?(?P<symbol>\w+)",
+    re.IGNORECASE,
+)
+# "short-term" describes a horizon, not a direction.
+SHORT_WORD = re.compile(r"\bshort(?:s|ed|ing)?\b(?!-term)", re.IGNORECASE)
+LONG_WORD = re.compile(r"\blong(?:s|ed|ing)?\b", re.IGNORECASE)
+DIRECTION_WORD = re.compile(r"(?:long|short)(?:s|ed|ing)?", re.IGNORECASE)
+# A line that is only a heading ("Shorts:", "🔻 Short positions") sets the side of
+# the allocations below it, up to the next such heading.
+DIRECTION_HEADER = re.compile(
+    r"^[^\w\n]*(?P<side>long|short)s?(?:[ \t]+(?:positions?|allocations?|side))?[^\w\n]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+STABLE = "USDC"
 CASH_ALIASES = {"cash", "usd", "stables", "stable"}
 KNOWN_TOKENS = {
     "BTC", "ETH", "SOL", "SUI", "XRP", "DOGE", "LINK", "BNB",
@@ -39,6 +58,14 @@ class TRWInvalidCredentialsError(RuntimeError):
     """TRW login rejected the supplied email/password."""
 
 
+class AmbiguousSignalError(ValueError):
+    """The signal's text does not say which way a position goes.
+
+    Raised rather than guessed: reading a short as a long buys the coin the signal
+    says to bet against.
+    """
+
+
 SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", ".trw_session")
 DEBUG_DIR = os.getenv("TRW_DEBUG_DIR", tempfile.gettempdir())
 os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -59,26 +86,98 @@ BROWSER_CONTEXT = {
 _SESSION_LOCK = asyncio.Lock()
 
 
+def _allocation_symbol(match: re.Match) -> str | None:
+    """The coin an allocation names, or None when the word after the % is not one."""
+    raw = match.group("symbol")
+    if DIRECTION_WORD.fullmatch(raw):
+        # "10% SHORT" with no coin: dropping it would scale the rest up into its room.
+        raise AmbiguousSignalError(f"Allocation names no coin: {match.group(0)!r}")
+    symbol = raw.upper()
+    if symbol not in KNOWN_TOKENS:
+        if not UNLISTED_TICKER.fullmatch(raw):
+            return None
+        logger.info("Signal names %s, outside the known tokens — kept as a ticker", symbol)
+    return STABLE if symbol.lower() in CASH_ALIASES else symbol
+
+
+def _line_bounds(text: str, match: re.Match) -> tuple[int, int]:
+    start = text.rfind("\n", 0, match.start()) + 1
+    end = text.find("\n", match.end())
+    return start, len(text) if end == -1 else end
+
+
+def _in_short_section(headers: list[tuple[int, bool]], pos: int) -> bool:
+    """Whether the nearest direction heading above `pos` is a shorts heading."""
+    short = False
+    for start, is_short in headers:
+        if start >= pos:
+            break
+        short = is_short
+    return short
+
+
+def _short_flags(line: str, line_start: int, matches: list[re.Match],
+                 short_section: bool) -> list[bool]:
+    """Which of one line's allocations are shorts.
+
+    Every unclear case resolves toward short or refuses the signal, never toward
+    long: a short read as a long buys the coin the signal bets against. A sign on
+    the number, or a direction word inside the allocation ("10% Short SOL"), binds
+    to that allocation. A word outside them ("10% SOL (SHORT)") binds to the line's
+    only allocation, or to all of them when it opens the line ("Shorts: 10% SOL,
+    5% ETH"). Anywhere else it is ambiguous.
+    """
+    if short_section:
+        return [True] * len(matches)
+    flags = [bool(m.group("sign") or SHORT_WORD.search(m.group(0))) for m in matches]
+    rest = list(line)
+    for m in matches:
+        rest[m.start() - line_start:m.end() - line_start] = " " * (m.end() - m.start())
+    rest = "".join(rest)
+    if not SHORT_WORD.search(rest):
+        return flags
+    if len(matches) == 1:
+        return [True]
+    opening = matches[0].start() - line_start
+    if not SHORT_WORD.search(rest, opening) and not LONG_WORD.search(rest):
+        return [True] * len(matches)
+    raise AmbiguousSignalError(f"Can't tell which allocations are short in: {line.strip()!r}")
+
+
 def parse_signal(text: str) -> dict[str, float]:
+    """Read a signal's allocations as signed weights: a short is negative.
+
+    Raises AmbiguousSignalError when the text does not say which way a position
+    goes, or names one coin on both sides.
+    """
     section = _signal_section(text)
     if section is None:
         return {}
 
-    allocations = _collect_allocations(section)
-    total_allocation = sum(allocations.values())
+    longs, shorts = _collect_allocations(section)
+    both = sorted(longs.keys() & shorts.keys())
+    if both:
+        raise AmbiguousSignalError(f"Signal lists {', '.join(both)} as both long and short")
+
+    # Gross: a short's weight is part of the book, so leaving it out of the total
+    # would scale the longs up into the room it takes.
+    total_allocation = sum(longs.values()) + sum(shorts.values())
     if total_allocation == 0:
         logger.warning("Parsed allocations sum to 0%% — returning empty")
         return {}
 
+    factor = 1.0
     if not (95.0 <= total_allocation <= 105.0):
         logger.warning(
             "Parsed allocations sum to %.2f%% (outside [95%%, 105%%]); normalizing to 100%%",
             total_allocation,
         )
         factor = 100.0 / total_allocation
-        for symbol in allocations:
-            allocations[symbol] *= factor
 
+    if shorts:
+        logger.info("Signal shorts %s", ", ".join(f"{s} {pct:.2f}%" for s, pct in shorts.items()))
+    allocations = {symbol: pct * factor for symbol, pct in longs.items()}
+    allocations.update({symbol: -pct * factor if pct else 0.0 for symbol, pct in shorts.items()})
     return allocations
 
 
@@ -97,30 +196,34 @@ def _signal_section(text: str) -> str | None:
     return section
 
 
-def _collect_allocations(section: str) -> dict[str, float]:
-    allocations = {}
-    for match in ALLOCATION_LINE.finditer(section):
-        symbol = _allocation_symbol(match.group(2))
-        if symbol is None:
-            continue
-        pct = float(match.group(1))
-        if symbol in allocations:
-            logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, allocations[symbol], pct)
-            allocations[symbol] += pct
-        else:
-            allocations[symbol] = pct
-    return allocations
+def _collect_allocations(section: str) -> tuple[dict[str, float], dict[str, float]]:
+    """Sum the section's allocations into (longs, shorts), both as positive weights."""
+    headers = [(m.start(), m.group("side").lower() == "short")
+               for m in DIRECTION_HEADER.finditer(section)]
+    parsed = [(match, symbol) for match in ALLOCATION_LINE.finditer(section)
+              if (symbol := _allocation_symbol(match))]
+    books = {False: {}, True: {}}  # keyed by is_short
+    for (line_start, line_end), group in groupby(
+            parsed, key=lambda item: _line_bounds(section, item[0])):
+        group = list(group)
+        flags = _short_flags(section[line_start:line_end], line_start,
+                             [match for match, _ in group],
+                             _in_short_section(headers, line_start))
+        for (match, symbol), is_short in zip(group, flags):
+            _add_allocation(books, match, symbol, is_short)
+    return books[False], books[True]
 
 
-def _allocation_symbol(raw: str) -> str | None:
-    symbol = raw.upper()
-    if symbol not in KNOWN_TOKENS:
-        if not UNLISTED_TICKER.fullmatch(raw):
-            return None
-        logger.info("Signal names %s, outside the known tokens — kept as a ticker", symbol)
-    if symbol.lower() in CASH_ALIASES:
-        return "USDC"
-    return symbol
+def _add_allocation(books: dict[bool, dict[str, float]], match: re.Match,
+                    symbol: str, is_short: bool) -> None:
+    if is_short and symbol == STABLE:
+        logger.warning("Signal shorts cash (%r) — read as a cash allocation", match.group(0))
+        is_short = False
+    book = books[is_short]
+    pct = float(match.group("pct"))
+    if symbol in book:
+        logger.info("Duplicate allocation for %s — aggregating %.2f + %.2f", symbol, book[symbol], pct)
+    book[symbol] = book.get(symbol, 0.0) + pct
 
 
 async def _login(page) -> None:

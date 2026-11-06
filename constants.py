@@ -45,6 +45,10 @@ MANUAL_ASSETS = {
     if asset.strip()
 }
 REBALANCE_RESERVE_PCT = float(getenv("REBALANCE_RESERVE_PCT", "0.5"))
+# Opt-in to trading a signal's shorts. Binance spot cannot short (and its EU
+# accounts get no margin or futures), so no venue the bot trades can act on this
+# yet: until one is wired in, a short's weight is held in USDC either way.
+SHORTS_ENABLED = getenv("SHORTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 # Backstop for the degraded-venue check in Balance.degraded: a snapshot worth
 # less than this fraction of the last clean one is treated as a failed read
 # rather than a real drawdown. Must be between 0 and 1 — a ratio of 1 or more
