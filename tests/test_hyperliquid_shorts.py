@@ -1,4 +1,5 @@
 """Signal shorts traded as Hyperliquid perps: sizing, ordering, margin and reporting."""
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -39,7 +40,7 @@ class FakePerpExchange:
     def public_post_info(self, request):
         """A unified account: spot USDC is the whole balance, `hold` what perps tie up."""
         return {
-            "userAbstraction": "unifiedAccount",
+            "userAbstraction": json.dumps("unifiedAccount"),  # ccxt returns a bare string as raw JSON
             "clearinghouseState": {"withdrawable": "0.0"},
             "spotClearinghouseState": {"balances": [
                 {"coin": "USDC", "total": str(self.free_usdc + 500.0), "hold": "500.0"}]},
