@@ -33,6 +33,12 @@ DIRECTION_HEADER = re.compile(
     r"^[^\w\n]*(?P<side>long|short)s?(?:[ \t]+(?:positions?|allocations?|side))?[^\w\n]*$",
     re.IGNORECASE | re.MULTILINE,
 )
+# The signal's combined book. The modules above it list the same positions again,
+# so reading them too would count each one twice.
+NET_POSITIONS_HEADER = re.compile(r"^[^\w\n]*net[ \t]+positions?\b", re.IGNORECASE | re.MULTILINE)
+# Longs adding up to this range are the whole book, so shorts listed beside them
+# are paid for out of its USDC rather than added on top.
+FULL_BOOK = (95.0, 105.0)
 STABLE = "USDC"
 CASH_ALIASES = {"cash", "usd", "stables", "stable"}
 KNOWN_TOKENS = {
@@ -158,6 +164,7 @@ def parse_signal(text: str) -> dict[str, float]:
     both = sorted(longs.keys() & shorts.keys())
     if both:
         raise AmbiguousSignalError(f"Signal lists {', '.join(both)} as both long and short")
+    _fund_shorts_from_cash(longs, shorts)
 
     # Gross: a short's weight is part of the book, so leaving it out of the total
     # would scale the longs up into the room it takes.
@@ -167,7 +174,7 @@ def parse_signal(text: str) -> dict[str, float]:
         return {}
 
     factor = 1.0
-    if not (95.0 <= total_allocation <= 105.0):
+    if not (FULL_BOOK[0] <= total_allocation <= FULL_BOOK[1]):
         logger.warning(
             "Parsed allocations sum to %.2f%% (outside [95%%, 105%%]); normalizing to 100%%",
             total_allocation,
@@ -181,6 +188,26 @@ def parse_signal(text: str) -> dict[str, float]:
     return allocations
 
 
+def _fund_shorts_from_cash(longs: dict[str, float], shorts: dict[str, float]) -> None:
+    """Take the shorts out of the USDC when the longs alone already fill the book.
+
+    "100% USDC" with 12% of shorts beside it means 88% USDC and 12% short, not a
+    112% book. Shorts that complete the longs to 100% ("90% BTC", "10% SOL short")
+    are already inside the book and are left alone.
+    """
+    short_total = sum(shorts.values())
+    if not short_total or not (FULL_BOOK[0] <= sum(longs.values()) <= FULL_BOOK[1]):
+        return
+    cash = longs.get(STABLE, 0.0)
+    if cash < short_total:
+        raise AmbiguousSignalError(
+            f"Signal's shorts ({short_total:.2f}%) exceed its {STABLE} ({cash:.2f}%) "
+            "on a book the longs already fill"
+        )
+    logger.info("Shorts %.2f%% taken out of %s %.2f%%", short_total, STABLE, cash)
+    longs[STABLE] = cash - short_total
+
+
 def _signal_section(text: str) -> str | None:
     # Use rfind so correction messages that quote the original signal at the top
     # are parsed from the actual (last) "RSPS Signal:" section, not the quoted preview.
@@ -192,8 +219,10 @@ def _signal_section(text: str) -> str | None:
     for delimiter in ["Executive Summary", "Associated Data", "———", "─────"]:
         end = section.find(delimiter)
         if end > 0:
-            return section[:end]
-    return section
+            section = section[:end]
+            break
+    net = NET_POSITIONS_HEADER.search(section)
+    return section[net.start():] if net else section
 
 
 def _collect_allocations(section: str) -> tuple[dict[str, float], dict[str, float]]:
