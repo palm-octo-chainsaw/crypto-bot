@@ -262,7 +262,8 @@ class DisplayRate:
 
 
 def opened_closed(symbol: str, side: str, direction: str | None) -> tuple[str | None, str | None]:
-    """(coin opened, coin closed) by a trade, None where that side is cash or nothing.
+    """(coin opened, coin closed) by a trade, None where that side is cash or nothing,
+    and both None without a direction: a perp sell could open a short or close a long.
 
     A long opens the coin it buys and closes the one it sells; a short opens on the
     sell and closes on the buy. A cross pair fills both: buying ETH/BTC opens ETH
@@ -271,7 +272,7 @@ def opened_closed(symbol: str, side: str, direction: str | None) -> tuple[str | 
     """
     base, _, quote = symbol.partition("/")
     quote = quote.split(":")[0]  # a perp names its settlement coin after the colon
-    if side not in ("buy", "sell") or not base or not quote:
+    if side not in ("buy", "sell") or direction not in ("long", "short") or not base or not quote:
         return None, None
     bought, sold = (base, quote) if side == "buy" else (quote, base)
     opened, closed = (sold, bought) if direction == "short" else (bought, sold)

@@ -24,3 +24,7 @@ def test_opened_closed(symbol, side, direction, expected):
 @pytest.mark.parametrize("symbol, side", [("", "buy"), ("ETH/USDC", ""), ("PAXG", "sell")])
 def test_opened_closed_is_empty_without_a_pair_and_a_side(symbol, side):
     assert opened_closed(symbol, side, "long") == (None, None)
+
+
+def test_opened_closed_is_empty_without_a_direction():
+    assert opened_closed("SOL/USDC:USDC", "sell", None) == (None, None)
