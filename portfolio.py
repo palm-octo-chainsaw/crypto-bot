@@ -6,9 +6,9 @@ from data.trading import (
 )
 from data.database import record_snapshot, record_trade, get_latest_signal_id, get_latest_allocations
 from data.hyperliquid_account import UNIFIED, UnsupportedAccountMode
-from data.hyperliquid_book import account_state, execute_legs
+from data.hyperliquid_book import account_state, execute_legs, mid_price, perp_symbol
 from data.longs import plan_longs
-from data.shorts import plan_shorts
+from data.shorts import held_shorts, plan_shorts
 from summary import Summary
 from data.balance import Balance
 import constants
@@ -213,6 +213,88 @@ class Portfolio:
                 )
                 self.send_rebalance = True
 
+    def evaluate_shorts(self, total_value: float) -> None:
+        """Report each short held on Hyperliquid against the latest signal's.
+
+        The targets file holds long weights only, and the margin behind a short is
+        counted as USDC, so without this /check shows an all-USDC book as balanced
+        whatever the shorts are doing. A read failure is reported, never raised:
+        the longs above it are still worth showing.
+        """
+        shorts, notice = self._latest_shorts()
+        if shorts is None:
+            if notice:
+                self.summary.add_summary(f"\n{notice}")
+            return
+        if not HYPERLIQUID_ACCOUNT_ADDRESS or not HYPERLIQUID_PRIVATE_KEY:
+            self.summary.add_summary("\n⚠️ Hyperliquid credentials not set — shorts not shown.")
+            return
+        try:
+            exchange = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
+            symbols = {coin: perp_symbol(exchange, coin) for coin in shorts}
+            held_usd = self._held_shorts_usd(exchange, symbols)
+        except Exception as err:
+            logger.exception("Could not read Hyperliquid shorts: %s", err)
+            self.summary.add_summary("\n⚠️ Could not read Hyperliquid shorts. Check logs for details.")
+            return
+        if not shorts and not held_usd:
+            return
+
+        self.summary.add_summary("\n🔻 *Shorts*")
+        for coin in sorted(shorts.keys() | held_usd.keys()):
+            if coin in symbols and symbols[coin] is None:
+                self.summary.add_summary(f"${coin}: no Hyperliquid perp — held in {STABLE}")
+                continue
+            current_pct = held_usd.get(coin, 0.0) / total_value * 100 if total_value else 0.0
+            target_pct = shorts.get(coin, 0.0)
+            diff = current_pct - target_pct
+            arrow = "🔺" if diff > 0 else "🔻"
+            self.summary.add_summary(
+                f"${coin}: {current_pct:.2f}% short (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
+            )
+            if abs(diff) > REBALANCE_THRESHOLD_PCT:
+                self.summary.add_rebalance(
+                    f"⚠️ *Rebalance Needed*: ${coin} short is off by {diff:+.2f}% "
+                    f"(Current: {current_pct:.2f}%; Target: {target_pct:.2f}%)"
+                )
+                self.send_rebalance = True
+
+    def perp_lines(self) -> list[str]:
+        """/balance's perp section: each open Hyperliquid perp's size and side.
+
+        Empty when the bot trades no perps or none are open; a notice when they
+        cannot be read, so the balances above it are still shown.
+        """
+        if not (constants.on_hyperliquid() or constants.SHORTS_ENABLED):
+            return []
+        if not HYPERLIQUID_ACCOUNT_ADDRESS or not HYPERLIQUID_PRIVATE_KEY:
+            return ["⚠️ Hyperliquid credentials not set — perps not shown."]
+        try:
+            exchange = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
+            positions = [(p["symbol"], float(p.get("contracts") or 0), p.get("side"))
+                         for p in exchange.fetch_positions()]
+        except Exception as err:
+            logger.exception("Could not read Hyperliquid perps: %s", err)
+            return ["⚠️ Could not read Hyperliquid perps. Check logs for details."]
+        return [f"{symbol.split('/')[0]}: {contracts} {side}"
+                for symbol, contracts, side in sorted(positions) if contracts]
+
+    @staticmethod
+    def _held_shorts_usd(exchange, symbols: dict[str, str | None]) -> dict[str, float]:
+        """Open shorts as {coin: USD notional at the mid}.
+
+        A coin Hyperliquid lists per thousand (SHIB as KSHIB) is named as the signal
+        names it; a short the signal does not name keeps its perp's base.
+        """
+        coins = {symbol: coin for coin, symbol in symbols.items() if symbol}
+        held = {}
+        for symbol, contracts in held_shorts(exchange).items():
+            price = mid_price(exchange, symbol)
+            if price is None:
+                raise ValueError(f"no price on Hyperliquid for {symbol}")
+            held[coins.get(symbol, symbol.split("/")[0])] = contracts * price
+        return held
+
     def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
         usable_value = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
         return {
@@ -240,6 +322,7 @@ class Portfolio:
         self.update_portfolio()
         prices, values, total_value = self.fetch_live_data()
         self.evaluate_symbol(values, total_value)
+        self.evaluate_shorts(total_value)
         untracked = self._untracked_notice()
         if untracked:
             self.summary.add_summary(f"\n{untracked}")
