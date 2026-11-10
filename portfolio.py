@@ -621,6 +621,9 @@ class Portfolio:
                 fee_amount=trade.get("fee_amount"),
                 fee_currency=trade.get("fee_currency"),
                 fee_rate=trade.get("fee_rate"),
+                # Spot is always long; only a Hyperliquid perp leg can be short.
+                direction="short" if trade.get("short") else "long",
+                perp=bool(trade.get("perp")),
             )
 
     def _refusal(self) -> str | None:

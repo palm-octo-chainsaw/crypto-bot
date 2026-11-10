@@ -389,6 +389,7 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
     assert rows[0]["signal_id"] == 7
     assert rows[0]["price"] == 2500.0
     assert rows[0]["fee_amount"] == 0.5
+    assert (rows[0]["direction"], rows[0]["perp"]) == ("long", False)
 
 
 def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):

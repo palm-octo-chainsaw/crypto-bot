@@ -274,6 +274,7 @@ def test_rebalance_trades_shorts_with_no_spot_legs(shorts_portfolio, monkeypatch
     assert ex.orders[0][:3] == ("SOL/USDC:USDC", "sell", 10.0)
     row = shorts_portfolio.recorded[0]
     assert (row["symbol"], row["side"], row["status"]) == ("SOL/USDC:USDC", "sell", "filled")
+    assert (row["direction"], row["perp"]) == ("short", True)
     assert row["usd_value"] == pytest.approx(1_000.0)
 
 

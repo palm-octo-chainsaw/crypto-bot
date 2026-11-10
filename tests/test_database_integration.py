@@ -204,6 +204,14 @@ def test_record_trade_and_recent(db):
     assert trades[0]["dry_run"] is True
     assert trades[1]["symbol"] == "BTC"
     assert trades[1]["dry_run"] is False
+    assert trades[1]["direction"] is None  # not given, as on rows written before it was
+
+
+def test_record_trade_keeps_the_direction(db):
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "oid-3",
+                    dry_run=False, direction="short", perp=True)
+    trade = db.get_recent_trades(limit=1)[0]
+    assert (trade["direction"], trade["perp"]) == ("short", True)
 
 
 def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, monkeypatch):

@@ -395,8 +395,9 @@ def _format_trades_section() -> list[str]:
             ts = t["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             marker = " (dry)" if t["dry_run"] else ""
             usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
+            side = f"{t['side']} short" if t.get("direction") == "short" else t["side"]
             lines.append(
-                f"{ts} {t['side']} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}"
+                f"{ts} {side} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}"
             )
     except Exception as err:
         # Rendering is inside the try so a schema that failed to migrate degrades
