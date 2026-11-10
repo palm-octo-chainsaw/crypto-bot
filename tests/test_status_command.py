@@ -23,6 +23,7 @@ def stub_portfolio(monkeypatch):
     fake.fetch_live_data.return_value = ({}, {}, 1234.56)
     fake.holdings = {"BTC": 0.5, "USDC": 100.0}
     fake.targets = {"BTC": 60.0, "USDC": 40.0}
+    fake.perp_lines.return_value = []
     monkeypatch.setattr(ch, "portfolio", fake)
     return fake
 
@@ -290,6 +291,32 @@ async def test_get_spot_balance_lists_holdings(fake_context, stub_portfolio):
     out = _replies(update)[0]
     assert "BTC: 0.5" in out
     assert "USDC: 100.0" in out
+    assert "Perps" not in out
+
+
+@pytest.mark.asyncio
+async def test_get_spot_balance_leaves_out_zero_holdings(fake_context, stub_portfolio):
+    stub_portfolio.holdings = {"BTC": 0.0, "DOGE": 0.0, "HYPE": 0.0049, "USDC": 100.0}
+    update = _make_update()
+
+    await ch.get_spot_balance(update, fake_context)
+
+    out = _replies(update)[0]
+    assert "BTC" not in out
+    assert "DOGE" not in out
+    assert "HYPE: 0.0049" in out
+
+
+@pytest.mark.asyncio
+async def test_get_spot_balance_lists_perps_below_the_holdings(fake_context, stub_portfolio):
+    stub_portfolio.perp_lines.return_value = ["XRP: 187.0 short"]
+    update = _make_update()
+
+    await ch.get_spot_balance(update, fake_context)
+
+    holdings, perps = _replies(update)[0].split("Perps")
+    assert "USDC: 100.0" in holdings
+    assert "XRP: 187.0 short" in perps
 
 
 @pytest.mark.asyncio

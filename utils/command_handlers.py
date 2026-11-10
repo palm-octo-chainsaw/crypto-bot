@@ -533,8 +533,13 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         portfolio.update_portfolio()
-        lines = [f"{symbol}: {value}" for symbol, value in portfolio.holdings.items()]
-        await _reply(update, "💰 *Portfolio Balance*:\n\n" + "\n".join(lines))
+        # Every target is tracked, so tokens the signal dropped long ago read 0.
+        lines = [f"{symbol}: {value}" for symbol, value in portfolio.holdings.items() if value]
+        message = "💰 *Portfolio Balance*:\n\n" + "\n".join(lines)
+        perps = portfolio.perp_lines()
+        if perps:
+            message += "\n\n📉 *Perps*:\n\n" + "\n".join(perps)
+        await _reply(update, message)
     except Exception as error:
         logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)

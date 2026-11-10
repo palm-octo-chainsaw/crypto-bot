@@ -421,3 +421,128 @@ def test_shorts_never_force_a_rebalance_when_disabled(monkeypatch):
     monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"USDC": 90.0, "SOL": -10.0})
 
     assert not ch._shorts_changed({"USDC": 90.0, "ETH": -10.0})
+
+
+# --- /check ----------------------------------------------------------------
+
+def _check_lines(portfolio):
+    portfolio.summary = pf.Summary()
+    portfolio.send_rebalance = False
+    portfolio.evaluate_shorts(10_000.0)
+    return portfolio.summary.lines, portfolio.summary.rebalances
+
+
+def test_check_lists_each_short_against_the_signal(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "get_latest_allocations",
+                        lambda: {"USDC": 87.0, "SOL": -10.0, "SHIB": -3.0})
+    ex = FakePerpExchange(positions=[_short("SOL/USDC:USDC", 9.0), _short("KSHIB/USDC:USDC", 30_000.0),
+                                     _short("ETH/USDC:USDC", 0.5)])
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: ex)
+
+    lines, rebalances = _check_lines(shorts_portfolio)
+
+    assert lines == [
+        "\n🔻 *Shorts*",
+        "$ETH: 10.00% short (Target: 0.00%) 🔺 10.00%",
+        "$SHIB: 3.00% short (Target: 3.00%) 🔻 0.00%",
+        "$SOL: 9.00% short (Target: 10.00%) 🔻 -1.00%",
+    ]
+    assert rebalances == ["⚠️ *Rebalance Needed*: $ETH short is off by +10.00% "
+                          "(Current: 10.00%; Target: 0.00%)"]
+    assert shorts_portfolio.send_rebalance
+
+
+def test_check_names_a_dropped_per_thousand_short_by_its_coin(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "get_latest_allocations", lambda: {"USDC": 100.0})
+    markets = {"KSHIB/USDC:USDC": {**_market(0.01), "info": {"name": "kSHIB", "midPx": "0.01"}},
+               "KAS/USDC:USDC": {**_market(0.1), "info": {"name": "KAS", "midPx": "0.1"}}}
+    ex = FakePerpExchange(markets=markets, positions=[_short("KSHIB/USDC:USDC", 30_000.0),
+                                                      _short("KAS/USDC:USDC", 1_000.0)])
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: ex)
+
+    lines, _ = _check_lines(shorts_portfolio)
+
+    assert lines[1:] == ["$KAS: 1.00% short (Target: 0.00%) 🔺 1.00%",
+                         "$SHIB: 3.00% short (Target: 0.00%) 🔺 3.00%"]
+
+
+def test_check_names_a_short_with_no_perp(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "get_latest_allocations", lambda: {"USDC": 98.0, "XYZ": -2.0})
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: FakePerpExchange())
+
+    lines, rebalances = _check_lines(shorts_portfolio)
+
+    assert lines[1] == "$XYZ: no Hyperliquid perp — held in USDC"
+    assert rebalances == []
+
+
+def test_check_reports_an_unreachable_hyperliquid_without_raising(shorts_portfolio, monkeypatch):
+    def unreachable(*args):
+        raise ConnectionError("dns")
+    monkeypatch.setattr(pf, "create_hyperliquid", unreachable)
+
+    lines, _ = _check_lines(shorts_portfolio)
+
+    assert lines == ["\n⚠️ Could not read Hyperliquid shorts. Check logs for details."]
+
+
+def test_check_has_no_shorts_section_without_shorts(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "get_latest_allocations", lambda: {"USDC": 100.0})
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: FakePerpExchange())
+
+    assert _check_lines(shorts_portfolio) == ([], [])
+
+
+def test_check_skips_shorts_when_disabled(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(constants, "SHORTS_ENABLED", False)
+    connect = MagicMock()
+    monkeypatch.setattr(pf, "create_hyperliquid", connect)
+
+    assert _check_lines(shorts_portfolio) == ([], [])
+    connect.assert_not_called()
+
+
+def test_listener_shows_the_shorts(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "create_hyperliquid",
+                        lambda *a: FakePerpExchange(positions=[_short("SOL/USDC:USDC", 10.0)]))
+    monkeypatch.setattr(pf, "record_snapshot", lambda **kw: None)
+    shorts_portfolio.summary = pf.Summary()
+    monkeypatch.setattr(shorts_portfolio, "_untracked_notice", lambda: None)
+
+    out = shorts_portfolio.listener()
+
+    assert "$SOL: 10.00% short (Target: 10.00%)" in out
+
+
+# --- /balance --------------------------------------------------------------
+
+def test_perp_lines_list_each_open_perp(shorts_portfolio, monkeypatch):
+    ex = FakePerpExchange(positions=[
+        _short("SOL/USDC:USDC", 9.0),
+        {"symbol": "ETH/USDC:USDC", "side": "long", "contracts": 0.5},
+        _short("KSHIB/USDC:USDC", 0.0),
+    ])
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: ex)
+
+    assert shorts_portfolio.perp_lines() == [
+        "ETH: 0.5 long",
+        "SOL: 9.0 short",
+    ]
+
+
+def test_perp_lines_report_an_unreachable_hyperliquid(shorts_portfolio, monkeypatch):
+    def unreachable(*args):
+        raise ConnectionError("dns")
+    monkeypatch.setattr(pf, "create_hyperliquid", unreachable)
+
+    assert shorts_portfolio.perp_lines() == ["⚠️ Could not read Hyperliquid perps. Check logs for details."]
+
+
+def test_perp_lines_are_empty_when_no_perps_are_traded(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(constants, "SHORTS_ENABLED", False)
+    monkeypatch.setattr(constants, "EXECUTION_VENUE", "binance")
+    connect = MagicMock()
+    monkeypatch.setattr(pf, "create_hyperliquid", connect)
+
+    assert shorts_portfolio.perp_lines() == []
+    connect.assert_not_called()
