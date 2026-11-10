@@ -543,7 +543,8 @@ async def currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     code = context.args[0].upper()
     try:
-        rate = fx.select(code)
+        # Off the event loop: a cold rate fetch and the settings write both block.
+        rate = await asyncio.to_thread(fx.select, code)
     except fx.UnknownCurrency:
         await _reply(update, f"⚠️ Unknown currency {code}. {CURRENCY_USAGE}", formatted=False)
         return

@@ -13,6 +13,8 @@ from constants import DATABASE_URL, SNAPSHOT_GATE_MIN_RATIO, SNAPSHOT_GATE_MAX_A
 
 logger = logging.getLogger(__name__)
 
+DOUBLE_PRECISION = "DOUBLE PRECISION"
+
 
 def get_connection() -> psycopg.Connection:
     return psycopg.connect(DATABASE_URL)
@@ -80,17 +82,17 @@ def _create_schema(conn: psycopg.Connection) -> None:
 def _add_missing_columns(conn: psycopg.Connection) -> None:
     """Bring databases created by an earlier version up to the current schema."""
     for table, col, col_type in [
-        ("trades", "fee_amount", "DOUBLE PRECISION"),
+        ("trades", "fee_amount", DOUBLE_PRECISION),
         ("trades", "fee_currency", "TEXT"),
-        ("trades", "fee_rate", "DOUBLE PRECISION"),
+        ("trades", "fee_rate", DOUBLE_PRECISION),
         ("signals", "message_timestamp", "TEXT"),
         ("snapshots", "partial", "BOOLEAN NOT NULL DEFAULT FALSE"),
         # The display currency and its USD rate when the row was written, so a past
         # amount is shown at its own day's rate. NULL when no rate could be had.
         ("snapshots", "fx_currency", "TEXT"),
-        ("snapshots", "fx_rate", "DOUBLE PRECISION"),
+        ("snapshots", "fx_rate", DOUBLE_PRECISION),
         ("trades", "fx_currency", "TEXT"),
-        ("trades", "fx_rate", "DOUBLE PRECISION"),
+        ("trades", "fx_rate", DOUBLE_PRECISION),
         # 'long' or 'short', and whether the leg was a perp: a short opens with a sell
         # and covers with a buy, which `side` alone cannot tell from a spot trade.
         # NULL on rows written before these were recorded.
