@@ -175,6 +175,15 @@ def test_no_margin_opens_nothing_and_reports_it_all_unfunded():
     assert unfunded == pytest.approx(200.0)
 
 
+def test_a_levered_short_is_short_its_margin_not_its_notional(monkeypatch):
+    monkeypatch.setattr(book, "SHORT_LEVERAGE", 2)
+    ex = FakePerpExchange(free_usdc=0.0)
+
+    _, unfunded = execute_shorts(ex, {"SOL": 2.0}, 10_000.0, dry_run=False)
+
+    assert unfunded == pytest.approx(100.0)  # a $200 short at 2x ties up $100
+
+
 def test_dry_run_places_nothing_and_sets_no_leverage():
     ex = FakePerpExchange(positions=[_short("ETH/USDC:USDC", 0.1)])
 
@@ -272,7 +281,7 @@ def test_unfunded_shorts_name_where_the_usdc_sits(shorts_portfolio, monkeypatch)
 
     out = shorts_portfolio.execute_rebalance(dry_run=False)
 
-    assert "🚧 Shorts — $1000.00 not opened, Hyperliquid lacks the USDC (its USDC sits on binance)" in out
+    assert "🚧 Shorts — not all opened, Hyperliquid is $1000.00 USDC short (its USDC sits on binance)" in out
     assert shorts_portfolio.recorded == []
 
 

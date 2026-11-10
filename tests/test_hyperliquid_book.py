@@ -336,7 +336,7 @@ def test_unfunded_buys_ask_for_a_deposit(hl_portfolio, monkeypatch):
 
     out = hl_portfolio.execute_rebalance(dry_run=True)
 
-    assert "🚧 Buys and shorts — $5000.00 not opened, Hyperliquid lacks the USDC (deposit USDC there)" in out
+    assert "🚧 Buys and shorts — not all opened, Hyperliquid is $5000.00 USDC short (deposit USDC there)" in out
 
 
 def test_missing_hyperliquid_credentials_refuse_to_trade(hl_portfolio, monkeypatch):

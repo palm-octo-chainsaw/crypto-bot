@@ -78,8 +78,8 @@ def _format_trade_line(trade: dict) -> str:
     if status == "unavailable" and trade.get("venue") == Balance.HYPERLIQUID:
         where = trade.get("held_on")
         fix = f"its {STABLE} sits on {where}" if where else f"deposit {STABLE} there"
-        return (f"🚧 {trade['label']} — ${trade['usd_value']:.2f} not opened, Hyperliquid lacks "
-                f"the {STABLE} ({fix})")
+        return (f"🚧 {trade['label']} — not all opened, Hyperliquid is ${trade['usd_value']:.2f} "
+                f"{STABLE} short ({fix})")
     if status == "unavailable":
         where = trade.get("held_on") or "another venue"
         return (f"🚧 {symbol} — ${trade['usd_value']:.2f} of the {side.lower()} leg is not "
@@ -638,10 +638,10 @@ class Portfolio:
             return unattempted, ("⚠️ Failed to reach Hyperliquid — positions left as they are. "
                                  "Check logs for details.")
 
-        placed, unfunded_usd = execute_legs(exchange, exits, entries, dry_run)
+        placed, short_usdc = execute_legs(exchange, exits, entries, dry_run)
         results += placed
-        if unfunded_usd >= MATCHED_USD:
-            results.append(self._unfunded_leg(unfunded_usd, bool(buys), bool(shorts)))
+        if short_usdc >= MATCHED_USD:
+            results.append(self._unfunded_leg(short_usdc, bool(buys), bool(shorts)))
         return results, notice
 
     @staticmethod
@@ -679,7 +679,7 @@ class Portfolio:
         return exits, entries, results
 
     def _unfunded_leg(self, usd: float, buys: bool, shorts: bool) -> dict:
-        """The buys and opens the free USDC could not carry, and where that USDC sits."""
+        """The USDC the buys and opens fell short by, and where that USDC sits."""
         if buys and shorts:
             label = "Buys and shorts"
         else:

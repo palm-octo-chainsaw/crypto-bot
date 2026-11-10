@@ -116,10 +116,12 @@ def _place(exchange, leg: Leg, dry_run: bool) -> dict:
 
 def execute_legs(exchange, exits: list[Leg], entries: list[Leg],
                  dry_run: bool) -> tuple[list, float]:
-    """Place the exits, then the entries the free USDC can carry. Returns (results, unfunded USD).
+    """Place the exits, then the entries the free USDC can carry. Returns (results, USDC short).
 
     Entries are scaled down together when the USDC cannot carry them all, and the
-    notional left out is returned, so the caller can say where that USDC sits.
+    USDC that would have carried the rest is returned — the margin, not the
+    notional, so a levered short asks for no more than it would tie up — so the
+    caller can say where that USDC sits.
     """
     results = [_place(exchange, leg, dry_run) for leg in exits]
     if not entries:
@@ -142,16 +144,16 @@ def execute_legs(exchange, exits: list[Leg], entries: list[Leg],
         logger.warning("Free USDC covers %.1f%% of the buys and opens — scaling them down",
                        scale * 100)
 
-    unfunded_usd = sum(leg.usd for leg in entries) * (1 - scale)
+    short_usdc = wanted * (1 - scale)
     for leg in entries:
         sized = leg.sized(leg.contracts * scale)
         floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
         if sized.usd < floor:
             if scale < 1.0:
                 # Only the scaling pushed it under the minimum: it lacks USDC, not size.
-                unfunded_usd += sized.usd
+                short_usdc += sized.margin_usd
             else:
                 results.append(sized.result(usd_value=sized.usd, min_usd=floor, dust=True))
             continue
         results.append(_place(exchange, sized, dry_run))
-    return results, unfunded_usd
+    return results, short_usdc
