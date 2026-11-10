@@ -80,8 +80,73 @@ def test_parse_signal_does_not_read_short_term_as_a_short():
 
 def test_parse_signal_normalizes_on_the_gross_total():
     """A short counts toward the book's size; netting it would inflate the longs."""
-    result = parse_signal("RSPS Signal:\n60% BTC\n40% ETH\n10% SOL short")
-    assert result == pytest.approx({"BTC": 600 / 11, "ETH": 400 / 11, "SOL": -100 / 11})
+    result = parse_signal("RSPS Signal:\n80% BTC\n40% SOL short")
+    assert result == pytest.approx({"BTC": 200 / 3, "SOL": -100 / 3})
+
+
+def test_parse_signal_takes_shorts_out_of_an_all_cash_book():
+    result = parse_signal("RSPS Signal:\n100% USDC\n2.1% XRP short\n1.6% ETH short")
+    assert result == pytest.approx({"USDC": 96.3, "XRP": -2.1, "ETH": -1.6})
+
+
+def test_parse_signal_takes_shorts_out_of_the_cash_beside_longs():
+    result = parse_signal("RSPS Signal:\n50% BTC\n50% USDC\n-10% SOL\n-5% ETH")
+    assert result == {"BTC": 50.0, "USDC": 35.0, "SOL": -10.0, "ETH": -5.0}
+
+
+def test_parse_signal_refuses_shorts_the_cash_cannot_fund():
+    with pytest.raises(AmbiguousSignalError, match="exceed"):
+        parse_signal("RSPS Signal:\n60% BTC\n40% ETH\n10% SOL short")
+
+
+# The 2026-11-10 signal as TRW renders it, up to its links.
+NET_POSITIONS_SIGNAL = """⚡ **Portfolio Signal Update** ⚡
+
+───── ⋆⋅☆⋅⋆ ─────
+
+📈 **RSPS Signal:** 📈
+- **100.0% CASH** 💵
+
+📉 **Short Module:** 📉
+- **2.1% XRP SHORT** 💀
+- **1.6% ETH SHORT** 🔷
+- **1.3% SOL SHORT** 🟣
+- **1.3% HYPE SHORT** 🟢
+- **1.2% ZEC SHORT** 🛡️
+- **1.2% XMR SHORT** 🕶️
+- **1.0% NEAR SHORT** 🌐
+- **1.0% ENA SHORT** 💠
+- **0.8% WLD SHORT** 🌍
+- **0.7% PUMP SHORT** 💊
+- Total short exposure: **12.0%**
+
+⚖️ **Net Positions:** ⚖️
+- **2.1% XRP SHORT** 💀 ⬇️
+- **1.6% ETH SHORT** 🔷 ⬇️
+- **1.3% SOL SHORT** 🟣 ⬇️
+- **1.3% HYPE SHORT** 🟢 ⬇️
+- **1.2% ZEC SHORT** 🛡️ ⬇️
+- **1.2% XMR SHORT** 🕶️ ⬇️
+- **1.0% NEAR SHORT** 🌐 ⬇️
+- **1.0% ENA SHORT** 💠 ⬇️
+- **0.8% WLD SHORT** 🌍 ⬇️
+- **0.7% PUMP SHORT** 💊 ⬇️
+- **100.0% CASH** 💵
+
+───── ⋆⋅☆⋅⋆ ─────
+
+Executive Summary: - Positions will continue to be actively managed. Check in every day, signals can change frequently.
+
+Associated Data: - BTC Leverage condition = BTC Leverage Impermissible ❌💀
+"""
+
+
+def test_parse_signal_reads_only_the_net_positions():
+    """The modules repeat the net book; reading both counted every position twice."""
+    assert parse_signal(NET_POSITIONS_SIGNAL) == pytest.approx({
+        "USDC": 87.8, "XRP": -2.1, "ETH": -1.6, "SOL": -1.3, "HYPE": -1.3, "ZEC": -1.2,
+        "XMR": -1.2, "NEAR": -1.0, "ENA": -1.0, "WLD": -0.8, "PUMP": -0.7,
+    })
 
 
 def test_parse_signal_keeps_a_gross_total_inside_the_tolerance():
