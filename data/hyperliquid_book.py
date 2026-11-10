@@ -5,6 +5,7 @@ that free USDC go first: every sell and cover is placed before any buy or open,
 and the buys and opens are then scaled down together to the USDC left free.
 """
 
+import json
 import logging
 from dataclasses import dataclass, replace
 
@@ -81,7 +82,10 @@ def mid_price(exchange, symbol: str) -> float | None:
 def account_state(exchange) -> tuple[str, dict, dict]:
     """(account mode, perp state, spot state) of the account the exchange trades for."""
     def info(request_type):
-        return exchange.public_post_info({"type": request_type, "user": exchange.walletAddress})
+        response = exchange.public_post_info({"type": request_type, "user": exchange.walletAddress})
+        # ccxt parses JSON objects but hands a bare JSON string back as its raw text,
+        # quotes included, so the account mode would read '"unifiedAccount"'.
+        return json.loads(response) if isinstance(response, str) else response
     return info("userAbstraction"), info("clearinghouseState"), info("spotClearinghouseState")
 
 

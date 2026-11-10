@@ -1,4 +1,5 @@
 """The whole book on Hyperliquid: longs on spot or a 1x perp, read and traded there alone."""
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -44,7 +45,7 @@ class FakeHyperliquid:
         balances = [{"coin": "USDC", "total": str(self.free_usdc + 500.0), "hold": "500.0"}]
         balances += [{"coin": token, "total": str(total), "hold": "0.0"} for token, total in self.spot.items()]
         return {
-            "userAbstraction": self.mode,
+            "userAbstraction": json.dumps(self.mode),  # ccxt returns a bare string as raw JSON
             "clearinghouseState": {"withdrawable": "0.0"},
             "spotClearinghouseState": {"balances": balances},
         }[request["type"]]
@@ -351,3 +352,12 @@ def test_the_api_wallet_key_is_redacted_from_replies(monkeypatch):
     monkeypatch.setattr(constants, "HYPERLIQUID_PRIVATE_KEY", "0xdeadbeefcafe")
 
     assert "0xdeadbeefcafe" not in ch._redact("signing failed for 0xdeadbeefcafe")
+
+
+def test_a_unified_account_answered_as_raw_json_text_is_unified():
+    """ccxt hands back '"unifiedAccount"', quotes included; read unparsed it is not unified,
+    and the free USDC comes off the perp side, which a unified account reports as 0."""
+    ex = FakeHyperliquid(free_usdc=1_000.0)
+
+    assert book.account_state(ex)[0] == "unifiedAccount"
+    assert book.free_margin(ex) == pytest.approx(1_000.0)
