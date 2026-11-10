@@ -84,3 +84,21 @@ def test_hyperliquid_directions_pages_through_the_fills(monkeypatch):
 
     assert bf.hyperliquid_directions("0xabc", since) == {"1": "short", "2": "long"}
     assert starts == [5, 20, 30]
+
+
+def test_perp_directions_need_an_account(monkeypatch, capsys):
+    monkeypatch.setattr(bf.constants, "HYPERLIQUID_ACCOUNT_ADDRESS", "")
+    monkeypatch.setattr(bf, "hyperliquid_directions", None)
+    assert bf._perp_directions([{"timestamp": datetime(2026, 11, 1, tzinfo=timezone.utc)}]) == {}
+    assert "HYPERLIQUID_ACCOUNT_ADDRESS not set" in capsys.readouterr().out
+
+
+def test_perp_directions_ask_from_the_oldest_trade(monkeypatch):
+    monkeypatch.setattr(bf.constants, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+    asked = []
+    monkeypatch.setattr(bf, "hyperliquid_directions",
+                        lambda address, since: asked.append((address, since)) or {"1": "short"})
+    old, new = datetime(2026, 10, 1, tzinfo=timezone.utc), datetime(2026, 11, 1, tzinfo=timezone.utc)
+    assert bf._perp_directions([{"timestamp": new}, {"timestamp": old}]) == {"1": "short"}
+    assert asked == [("0xabc", old)]
+    assert bf._perp_directions([]) == {}

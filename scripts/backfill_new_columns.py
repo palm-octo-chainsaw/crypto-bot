@@ -117,6 +117,31 @@ def _update(cur, table: str, row_id: int, fill: dict) -> None:
                 (*fill.values(), row_id))
 
 
+def _perp_directions(unknown_perps: list[dict]) -> dict[str, str]:
+    """Hyperliquid's direction for each of these perp trades' orders, where it has one."""
+    if not unknown_perps:
+        return {}
+    if not constants.HYPERLIQUID_ACCOUNT_ADDRESS:
+        print("HYPERLIQUID_ACCOUNT_ADDRESS not set: perp directions left unknown")
+        return {}
+    return hyperliquid_directions(constants.HYPERLIQUID_ACCOUNT_ADDRESS,
+                                  min(t["timestamp"] for t in unknown_perps))
+
+
+def _plan_trades(trades: list[dict], directions: dict[str, str], code: str,
+                 rates: list[tuple[date, float]]) -> dict[int, dict]:
+    """{trade id: columns to fill} for every trade with something to fill."""
+    fills = {}
+    for trade in trades:
+        fill = plan_trade(trade, directions)
+        if trade["needs_rate"]:
+            fill["fx_currency"] = code
+            fill["fx_rate"] = rate_on(rates, _day(trade["timestamp"]))
+        if fill:
+            fills[trade["id"]] = fill
+    return fills
+
+
 def backfill(apply: bool) -> dict:
     with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         trades = cur.execute(
@@ -130,26 +155,14 @@ def backfill(apply: bool) -> dict:
 
         unknown_perps = [t for t in trades if t["direction"] is None
                          and (t["perp"] or (t["perp"] is None and ":" in t["symbol"]))]
-        directions = {}
-        if unknown_perps and not constants.HYPERLIQUID_ACCOUNT_ADDRESS:
-            print("HYPERLIQUID_ACCOUNT_ADDRESS not set: perp directions left unknown")
-        elif unknown_perps:
-            directions = hyperliquid_directions(constants.HYPERLIQUID_ACCOUNT_ADDRESS,
-                                                min(t["timestamp"] for t in unknown_perps))
+        directions = _perp_directions(unknown_perps)
 
         code = fx.current()
         days = [_day(t["timestamp"]) for t in trades if t["needs_rate"]]
         days += [_day(s["timestamp"]) for s in snapshots]
         rates = daily_usd_rates(code, min(days), max(days)) if days else []
 
-        trade_fills = {}
-        for trade in trades:
-            fill = plan_trade(trade, directions)
-            if trade["needs_rate"]:
-                fill["fx_currency"] = code
-                fill["fx_rate"] = rate_on(rates, _day(trade["timestamp"]))
-            if fill:
-                trade_fills[trade["id"]] = fill
+        trade_fills = _plan_trades(trades, directions, code, rates)
         snapshot_fills = {s["id"]: {"fx_currency": code, "fx_rate": rate_on(rates, _day(s["timestamp"]))}
                           for s in snapshots}
         unresolved = [t["id"] for t in unknown_perps if "direction" not in trade_fills.get(t["id"], {})]
