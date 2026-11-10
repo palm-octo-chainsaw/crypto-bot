@@ -286,3 +286,35 @@ def test_settings_round_trip(db):
     db.set_setting("display_currency", "EUR")
     db.set_setting("display_currency", "GBP")
     assert db.get_setting("display_currency") == "GBP"
+
+
+def _opened_closed(db, order_id):
+    with db.get_connection() as conn:
+        return conn.execute("SELECT opened, closed FROM trades WHERE order_id = %s",
+                            (order_id,)).fetchone()
+
+
+def test_record_trade_stores_what_it_opened_and_closed(db):
+    db.record_trade(None, "ETH/BTC", "buy", 1.0, 3000.0, 3000.0, "filled", "oid-x", dry_run=False,
+                    direction="long", perp=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "oid-s",
+                    dry_run=False, direction="short", perp=True)
+    assert _opened_closed(db, "oid-x") == ("ETH", "BTC")
+    assert _opened_closed(db, "oid-s") == ("SOL", None)
+
+
+def test_init_db_backfills_opened_and_closed_once(db):
+    db.record_trade(None, "ETH/USDC", "sell", 1.0, 3000.0, 3000.0, "filled", "spot", dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "perp-old",
+                    dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "buy", 10.0, 100.0, 1000.0, "filled", "perp-new",
+                    dry_run=False, direction="short", perp=True)
+    with db.get_connection() as conn:
+        conn.execute("ALTER TABLE trades DROP COLUMN opened, DROP COLUMN closed")
+
+    db.init_db()
+
+    assert _opened_closed(db, "spot") == (None, "ETH")
+    # No direction on an old perp row: a short opened and a long closed look alike.
+    assert _opened_closed(db, "perp-old") == (None, None)
+    assert _opened_closed(db, "perp-new") == (None, "SOL")
