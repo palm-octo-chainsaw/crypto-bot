@@ -635,8 +635,8 @@ class Portfolio:
         except Exception as err:
             logger.exception("Hyperliquid unreachable: %s", err)
             unattempted = _unattempted_legs(legs, f"Hyperliquid unreachable: {err}")
-            return unattempted, ("⚠️ Failed to reach Hyperliquid — positions left as they are. "
-                                 "Check logs for details.")
+            notice = "⚠️ Failed to reach Hyperliquid — positions left as they are. Check logs for details."
+            return unattempted, notice
 
         placed, short_usdc = execute_legs(exchange, exits, entries, dry_run)
         results += placed
