@@ -133,6 +133,18 @@ def test_trades_section_marks_shorts(monkeypatch):
     assert "sell short SOL/USDC:USDC 10.000000 → $1,000.00 [filled]" in out
 
 
+def test_trades_section_marks_shorts_and_keeps_the_recorded_rate(monkeypatch):
+    from data import fx
+    monkeypatch.setattr(fx, "_selected", "EUR")
+    rows = [{"timestamp": datetime(2026, 4, 30, 11, 0, tzinfo=timezone.utc),
+             "symbol": "SOL/USDC:USDC", "side": "sell", "amount": 10.0, "usd_value": 1000.0,
+             "status": "filled", "dry_run": False, "direction": "short", "perp": True,
+             "fx_currency": "EUR", "fx_rate": 0.95}]
+    monkeypatch.setattr(ch, "get_recent_trades", lambda limit=5: rows)
+    out = "\n".join(ch._format_trades_section())
+    assert "sell short SOL/USDC:USDC 10.000000 → €950.00 [filled]" in out
+
+
 def test_format_info_combines_all_sections(monkeypatch, fixed_started, stub_portfolio):
     monkeypatch.setenv("APP_VERSION", "v1.2.3")
     monkeypatch.setattr(ch, "get_latest_allocations", lambda: {"BTC": 50.0})

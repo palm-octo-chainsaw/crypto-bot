@@ -35,6 +35,11 @@ COINGECKO_IDS = {
     "NEAR": "near",
 }
 MIN_TRADE_USD = float(getenv("MIN_TRADE_USD", "1.0"))
+# Currency values are shown in until /currency picks another. The bot still counts
+# in USD; only what reaches the chat is converted.
+DISPLAY_CURRENCY = getenv("DISPLAY_CURRENCY", "EUR").strip().upper()
+# ECB reference rates, no key needed.
+FX_RATES_URL = "https://api.frankfurter.dev/v1/latest"
 # Assets tracked in the portfolio that none of the bot's execution venues can trade.
 # PAXG balances are read from Kraken (see data/balance.py) but Binance rejects PAXG
 # orders with -2010 "not permitted for this account", so its legs are reported for

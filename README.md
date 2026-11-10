@@ -64,6 +64,9 @@ BINANCE_API_SECRET=your_binance_api_secret
 KRAKEN_API_KEY=your_kraken_api_key
 KRAKEN_API_SECRET=your_kraken_api_secret
 
+# Currency values are shown in (optional, default EUR; /currency changes it)
+DISPLAY_CURRENCY=EUR
+
 # Signal scraper (optional)
 TRW_EMAIL=your_email
 TRW_PASSWORD=your_password
@@ -134,7 +137,8 @@ Postgres cutover; the procedure it belonged to is in this repo's git history.
 | `/check` | Show current allocation vs targets, flag assets that need rebalancing |
 | `/balance` | Show raw spot balances across all sources |
 | `/leverage` | Show leverage token balances |
-| `/total` | Show total portfolio value in USD |
+| `/total` | Show total portfolio value in the display currency |
+| `/currency [CODE]` | Show the display currency, or change it (e.g. `/currency USD`) |
 | `/get_targets` | Show current target allocations |
 | `/set_target SYMBOL PCT` | Update a target (e.g. `/set_target BTC 40`) |
 | `/rebalance` | Preview rebalancing trades (dry run) |
@@ -173,6 +177,7 @@ run.py                          # Entry point, registers Telegram handlers
 │   ├── trading.py              # ccxt trade routing (Binance)
 │   ├── database.py             # PostgreSQL signal/trade/snapshot storage
 │   ├── prices.py               # CoinGecko price fetching
+│   ├── fx.py                   # Display currency (USD → EUR etc.)
 │   └── scraper.py              # Signal scraper (Playwright + TOTP)
 ├── utils/
 │   ├── command_handlers.py     # Telegram command handlers
@@ -205,7 +210,7 @@ Binance rejects undersized orders with `-1013`, and a flat local floor can't pre
 `MANUAL_ASSETS` (default `PAXG`) lists assets the portfolio tracks but no execution venue trades.
 PAXG balances are read from Kraken, yet Binance rejects PAXG orders with
 `-2010 "not permitted for this account"`, and the bot has no Kraken execution path — `krakenex` is
-read-only. Their legs are reported as `✋ MANUAL` with the USD amount to trade by hand (PAXG on Kraken).
+read-only. Their legs are reported as `✋ MANUAL` with the amount to trade by hand (PAXG on Kraken).
 The sells funding them still run, so the USDC is waiting on Binance to be moved across.
 
 ## Signal Polling

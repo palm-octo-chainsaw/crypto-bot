@@ -18,8 +18,9 @@ import constants
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
 from data.prices import PriceRateLimitError, hyperliquid_lists
+from data import fx
 from data.database import (
-    record_signal, get_latest_message_timestamp, get_latest_allocations,
+    DisplayRate, record_signal, get_latest_message_timestamp, get_latest_allocations,
     get_recent_trades, get_snapshot_at_or_before, get_earliest_snapshot,
 )
 
@@ -185,6 +186,7 @@ async def set_bot_commands(bot: ExtBot) -> None:
         BotCommand("get_targets", "Show current target allocations"),
         BotCommand("set_target", "Set target % for a token (e.g. /set_target BTC 40)"),
         BotCommand("total", "Get total portfolio value"),
+        BotCommand("currency", "Show or change the display currency (e.g. /currency USD)"),
         BotCommand("rebalance", "Dry-run rebalance (/rebalance live to execute real trades)"),
         BotCommand("fetch_signal", "Fetch latest RSPS signal from TRW and update targets"),
         BotCommand("status", "Show scheduled poller status"),
@@ -347,7 +349,7 @@ def _format_portfolio_section() -> list[str]:
         non_zero = {s: v for s, v in portfolio.holdings.items() if v > 0}
         for symbol, value in non_zero.items():
             lines.append(f"{symbol}: {value}")
-        lines.append(f"Total: ${total:,.2f}")
+        lines.append(f"Total: {fx.money(total)}")
     except Exception as err:
         lines.append(f"⚠️ unavailable ({err})")
     return lines
@@ -394,10 +396,11 @@ def _format_trades_section() -> list[str]:
         for t in trades:
             ts = t["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
             marker = " (dry)" if t["dry_run"] else ""
-            usd = f"${t['usd_value']:,.2f}" if t["usd_value"] is not None else "—"
+            at = DisplayRate(t.get("fx_currency"), t.get("fx_rate"))
+            value = fx.money(t["usd_value"], at) if t["usd_value"] is not None else "—"
             side = f"{t['side']} short" if t.get("direction") == "short" else t["side"]
             lines.append(
-                f"{ts} {side} {t['symbol']} {t['amount']:.6f} → {usd} [{t['status']}]{marker}"
+                f"{ts} {side} {t['symbol']} {t['amount']:.6f} → {value} [{t['status']}]{marker}"
             )
     except Exception as err:
         # Rendering is inside the try so a schema that failed to migrate degrades
@@ -525,10 +528,37 @@ async def get_total(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         portfolio.update_portfolio()
         _, _, total = portfolio.fetch_live_data()
-        await _reply(update, f"💰 *Total Portfolio Value*:\n\n${total:,.2f} USD")
+        await _reply(update, f"💰 *Total Portfolio Value*:\n\n{fx.money(total)}")
     except Exception as error:
         logger.exception(COMMAND_FAILED_LOG, error)
         await _reply_error(update, GENERIC_ERROR_REPLY, error)
+
+
+CURRENCY_USAGE = "Usage: /currency CODE (e.g. /currency USD)"
+
+
+async def currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await _reply(update, f"💱 Values are shown in {fx.current()}.\n{CURRENCY_USAGE}", formatted=False)
+        return
+    code = context.args[0].upper()
+    try:
+        # Off the event loop: a cold rate fetch and the settings write both block.
+        rate = await asyncio.to_thread(fx.select, code)
+    except fx.UnknownCurrency:
+        await _reply(update, f"⚠️ Unknown currency {code}. {CURRENCY_USAGE}", formatted=False)
+        return
+    except fx.FxUnavailable as error:
+        logger.warning("currency: no rate for %s: %s", code, error)
+        await _reply(update, f"⚠️ Could not fetch the {code} rate — still showing {fx.current()}.",
+                     formatted=False)
+        return
+    except Exception as error:
+        logger.exception(COMMAND_FAILED_LOG, error)
+        await _reply_error(update, GENERIC_ERROR_REPLY, error)
+        return
+    await _reply(update, f"✅ Values now shown in {code} (1 {fx.BASE} = {rate:.4f} {code}).",
+                 formatted=False)
 
 
 async def get_spot_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

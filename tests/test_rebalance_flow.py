@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import portfolio as pf
+from data.database import DisplayRate
 
 
 class FakeExchange:
@@ -84,7 +85,7 @@ def test_format_trade_line_unavailable_names_the_venue_holding_the_coins():
                                   "usd_value": 20_000.0, "venue": "binance",
                                   "held_on": "kraken", "unavailable": True})
     assert "BTC/USDC" in line
-    assert "$20000.00" in line
+    assert "$20,000.00" in line
     assert "not executable on binance" in line
     assert "sits on kraken" in line
 
@@ -390,6 +391,7 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
     assert rows[0]["price"] == 2500.0
     assert rows[0]["fee"] == pf.Fee(0.5, "USDC", 0.001)
     assert (rows[0]["direction"], rows[0]["perp"]) == ("long", False)
+    assert rows[0]["display_rate"] == DisplayRate("USD", 1.0)
 
 
 def test_persist_trades_records_the_fill_not_the_snapshot(monkeypatch):
@@ -611,6 +613,7 @@ def test_listener_reports_drift_and_records_a_snapshot(monkeypatch):
     assert "Rebalance Plan" in out
     assert snapshots[0]["signal_id"] == 3
     assert snapshots[0]["partial"] is False
+    assert snapshots[0]["display_rate"] == DisplayRate("USD", 1.0)
 
 
 def test_listener_flags_a_partial_snapshot_when_a_venue_is_degraded(monkeypatch):

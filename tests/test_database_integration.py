@@ -222,6 +222,20 @@ def test_record_trade_stores_the_fee_in_its_columns(db):
     assert row == (0.6, "USDC", 0.001)
 
 
+def test_record_trade_keeps_the_display_rate(db):
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "oid-5",
+                    dry_run=False, display_rate=db.DisplayRate("EUR", 0.95))
+    trade = db.get_recent_trades(limit=1)[0]
+    assert (trade["fx_currency"], trade["fx_rate"]) == ("EUR", 0.95)
+
+
+def test_record_snapshot_keeps_the_display_rate(db):
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {}, display_rate=db.DisplayRate("EUR", 0.95))
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT fx_currency, fx_rate FROM snapshots").fetchone()
+    assert row == ("EUR", 0.95)
+
+
 def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, monkeypatch):
     """End-to-end check of scripts/migrate_sqlite_to_pg against real Postgres."""
     import sqlite3
@@ -265,3 +279,10 @@ def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, mon
 
     # Re-running is idempotent (ON CONFLICT DO NOTHING) — no duplicates/errors.
     assert mig.migrate(sqlite_path) == {"signals": 1, "snapshots": 1, "trades": 1}
+
+
+def test_settings_round_trip(db):
+    assert db.get_setting("display_currency") is None
+    db.set_setting("display_currency", "EUR")
+    db.set_setting("display_currency", "GBP")
+    assert db.get_setting("display_currency") == "GBP"

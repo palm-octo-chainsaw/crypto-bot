@@ -1,5 +1,6 @@
 from utils.helpers import load_json, setup_logging, split_shorts
 from data.prices import fetch_prices
+from data.fx import money, rate_now
 from data.trading import (
     create_binance, create_hyperliquid, find_direct_pair, place_order,
     place_market_buy_cost, apply_precision, effective_min_usd,
@@ -67,10 +68,11 @@ def _format_trade_line(trade: dict) -> str:
     qty = f"${cost:.2f} {STABLE}" if amount in (None, 0) and cost else f"`{amount}`"
 
     if status == "manual":
-        return (f"✋ MANUAL {side} {symbol} (${trade['usd_value']:.2f}) — "
+        return (f"✋ MANUAL {side} {symbol} ({money(trade['usd_value'])}) — "
                 f"no bot venue trades {symbol}, execute it manually")
     if status == "dust":
-        return f"🔸 DUST {symbol} (${trade['usd_value']:.2f}) — below ${trade.get('min_usd', MIN_TRADE_USD):.2f} minimum"
+        return (f"🔸 DUST {symbol} ({money(trade['usd_value'])}) — "
+                f"below {money(trade.get('min_usd', MIN_TRADE_USD))} minimum")
     if status == "skipped":
         if trade.get("short"):
             return f"⏭️ SKIP {symbol} short — no Hyperliquid perp, held in {STABLE}"
@@ -82,7 +84,7 @@ def _format_trade_line(trade: dict) -> str:
                 f"{STABLE} short ({fix})")
     if status == "unavailable":
         where = trade.get("held_on") or "another venue"
-        return (f"🚧 {symbol} — ${trade['usd_value']:.2f} of the {side.lower()} leg is not "
+        return (f"🚧 {symbol} — {money(trade['usd_value'])} of the {side.lower()} leg is not "
                 f"executable on {trade.get('venue', 'the venue')}, it sits on {where}")
     if status == "error":
         return f"❌ {side} {symbol}: trade failed (see logs)"
@@ -316,9 +318,8 @@ class Portfolio:
             if abs(amount) < 1e-6:
                 continue
             action = "Buy" if amount > 0 else "Sell"
-            sign = "-" if action == "Sell" else ""
             self.summary.add_rebalance(
-                f"{action} [{abs(amount):.8f}] ${symbol} | {sign}${abs(amount * prices[symbol]):.2f} USD"
+                f"{action} [{abs(amount):.8f}] ${symbol} | {money(amount * prices[symbol])}"
             )
         return rebalance
 
@@ -350,6 +351,7 @@ class Portfolio:
             values_usd=values,
             targets=self.targets,
             partial=bool(degraded),
+            display_rate=rate_now(),
         )
         return self.summary.flush_summary()
 
@@ -599,6 +601,7 @@ class Portfolio:
 
     def _persist_trades(self, results: list, prices: dict) -> None:
         signal_id = get_latest_signal_id()
+        display_rate = rate_now()
         for trade in results:
             status = _trade_status(trade)
             if status not in ("filled", "error"):
@@ -622,6 +625,7 @@ class Portfolio:
                 # Spot is always long; only a Hyperliquid perp leg can be short.
                 direction="short" if trade.get("short") else "long",
                 perp=bool(trade.get("perp")),
+                display_rate=display_rate,
             )
 
     def _refusal(self) -> str | None:

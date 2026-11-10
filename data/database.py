@@ -13,6 +13,8 @@ from constants import DATABASE_URL, SNAPSHOT_GATE_MIN_RATIO, SNAPSHOT_GATE_MAX_A
 
 logger = logging.getLogger(__name__)
 
+DOUBLE_PRECISION = "DOUBLE PRECISION"
+
 
 def get_connection() -> psycopg.Connection:
     return psycopg.connect(DATABASE_URL)
@@ -45,7 +47,9 @@ def _create_schema(conn: psycopg.Connection) -> None:
             prices TEXT NOT NULL,
             values_usd TEXT NOT NULL,
             targets TEXT NOT NULL,
-            partial BOOLEAN NOT NULL DEFAULT FALSE
+            partial BOOLEAN NOT NULL DEFAULT FALSE,
+            fx_currency TEXT,
+            fx_rate DOUBLE PRECISION
         );
 
         CREATE TABLE IF NOT EXISTS trades (
@@ -64,18 +68,31 @@ def _create_schema(conn: psycopg.Connection) -> None:
             fee_currency TEXT,
             fee_rate DOUBLE PRECISION,
             direction TEXT,
-            perp BOOLEAN
+            perp BOOLEAN,
+            fx_currency TEXT,
+            fx_rate DOUBLE PRECISION
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
     """)
 
 def _add_missing_columns(conn: psycopg.Connection) -> None:
     """Bring databases created by an earlier version up to the current schema."""
     for table, col, col_type in [
-        ("trades", "fee_amount", "DOUBLE PRECISION"),
+        ("trades", "fee_amount", DOUBLE_PRECISION),
         ("trades", "fee_currency", "TEXT"),
-        ("trades", "fee_rate", "DOUBLE PRECISION"),
+        ("trades", "fee_rate", DOUBLE_PRECISION),
         ("signals", "message_timestamp", "TEXT"),
         ("snapshots", "partial", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        # The display currency and its USD rate when the row was written, so a past
+        # amount is shown at its own day's rate. NULL when no rate could be had.
+        ("snapshots", "fx_currency", "TEXT"),
+        ("snapshots", "fx_rate", DOUBLE_PRECISION),
+        ("trades", "fx_currency", "TEXT"),
+        ("trades", "fx_rate", DOUBLE_PRECISION),
         # 'long' or 'short', and whether the leg was a perp: a short opens with a sell
         # and covers with a buy, which `side` alone cannot tell from a spot trade.
         # NULL on rows written before these were recorded.
@@ -152,7 +169,7 @@ def _is_collapse(total_value_usd: float, now: datetime, previous: dict | None) -
 
 def record_snapshot(signal_id: int | None, total_value_usd: float,
                     balances: dict, prices: dict, values_usd: dict, targets: dict,
-                    partial: bool = False) -> None:
+                    partial: bool = False, display_rate: DisplayRate | None = None) -> None:
     """Persist a portfolio valuation.
 
     `partial` marks a snapshot taken while a venue was unreadable. Those rows are
@@ -166,13 +183,14 @@ def record_snapshot(signal_id: int | None, total_value_usd: float,
             total_value_usd,
         )
         partial = True
+    display_rate = display_rate or DisplayRate()
 
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO snapshots
                (timestamp, signal_id, total_value_usd, balances, prices, values_usd,
-                targets, partial)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                targets, partial, fx_currency, fx_rate)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 now,
                 signal_id,
@@ -182,6 +200,8 @@ def record_snapshot(signal_id: int | None, total_value_usd: float,
                 json.dumps(values_usd),
                 json.dumps(targets),
                 partial,
+                display_rate.currency,
+                display_rate.rate,
             ),
         )
     logger.info("Recorded %sportfolio snapshot: $%.2f USD",
@@ -196,18 +216,29 @@ class Fee:
     rate: float | None = None
 
 
+@dataclass(frozen=True)
+class DisplayRate:
+    """The display currency and its USD rate when a row was written, so a past amount
+    is shown at its own day's rate. Both None when no rate could be had."""
+    currency: str | None = None
+    rate: float | None = None
+
+
 def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  price: float | None, usd_value: float | None, status: str,
                  order_id: str | None, dry_run: bool, fee: Fee | None = None,
-                 direction: str | None = None, perp: bool | None = None) -> None:
+                 direction: str | None = None, perp: bool | None = None,
+                 display_rate: DisplayRate | None = None) -> None:
     fee = fee or Fee()
+    display_rate = display_rate or DisplayRate()
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO trades
                (timestamp, signal_id, symbol, side, amount, price, usd_value,
                 status, order_id, dry_run, fee_amount, fee_currency, fee_rate,
-                direction, perp)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                direction, perp, fx_currency, fx_rate)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                       %s, %s, %s, %s)""",
             (
                 datetime.now(timezone.utc),
                 signal_id,
@@ -224,6 +255,8 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                 fee.rate,
                 direction,
                 perp,
+                display_rate.currency,
+                display_rate.rate,
             ),
         )
 
@@ -249,7 +282,7 @@ def get_recent_trades(limit: int = 5) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
             """SELECT timestamp, symbol, side, amount, usd_value, status, dry_run,
-                      direction, perp
+                      direction, perp, fx_currency, fx_rate
                FROM trades ORDER BY id DESC LIMIT %s""",
             (limit,),
         ).fetchall()
@@ -257,7 +290,7 @@ def get_recent_trades(limit: int = 5) -> list[dict]:
         {
             "timestamp": r[0], "symbol": r[1], "side": r[2], "amount": r[3],
             "usd_value": r[4], "status": r[5], "dry_run": bool(r[6]),
-            "direction": r[7], "perp": r[8],
+            "direction": r[7], "perp": r[8], "fx_currency": r[9], "fx_rate": r[10],
         }
         for r in rows
     ]
@@ -288,6 +321,21 @@ def get_snapshot_at_or_before(target_ts: datetime) -> dict | None:
 
 def get_earliest_snapshot() -> dict | None:
     return _clean_snapshot("ORDER BY timestamp ASC LIMIT 1")
+
+
+def get_setting(key: str) -> str | None:
+    with get_connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = %s", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_setting(key: str, value: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO settings (key, value) VALUES (%s, %s)
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value""",
+            (key, value),
+        )
 
 
 def get_latest_message_timestamp() -> str | None:
