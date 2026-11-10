@@ -302,7 +302,8 @@ async def test_get_spot_balance_leaves_out_zero_holdings(fake_context, stub_port
     await ch.get_spot_balance(update, fake_context)
 
     out = _replies(update)[0]
-    assert "BTC" not in out and "DOGE" not in out
+    assert "BTC" not in out
+    assert "DOGE" not in out
     assert "HYPE: 0.0049" in out
 
 

@@ -452,6 +452,20 @@ def test_check_lists_each_short_against_the_signal(shorts_portfolio, monkeypatch
     assert shorts_portfolio.send_rebalance
 
 
+def test_check_names_a_dropped_per_thousand_short_by_its_coin(shorts_portfolio, monkeypatch):
+    monkeypatch.setattr(pf, "get_latest_allocations", lambda: {"USDC": 100.0})
+    markets = {"KSHIB/USDC:USDC": {**_market(0.01), "info": {"name": "kSHIB", "midPx": "0.01"}},
+               "KAS/USDC:USDC": {**_market(0.1), "info": {"name": "KAS", "midPx": "0.1"}}}
+    ex = FakePerpExchange(markets=markets, positions=[_short("KSHIB/USDC:USDC", 30_000.0),
+                                                      _short("KAS/USDC:USDC", 1_000.0)])
+    monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: ex)
+
+    lines, _ = _check_lines(shorts_portfolio)
+
+    assert lines[1:] == ["$KAS: 1.00% short (Target: 0.00%) 🔺 1.00%",
+                         "$SHIB: 3.00% short (Target: 0.00%) 🔺 3.00%"]
+
+
 def test_check_names_a_short_with_no_perp(shorts_portfolio, monkeypatch):
     monkeypatch.setattr(pf, "get_latest_allocations", lambda: {"USDC": 98.0, "XYZ": -2.0})
     monkeypatch.setattr(pf, "create_hyperliquid", lambda *a: FakePerpExchange())

@@ -5,7 +5,7 @@ from data.trading import (
     place_market_buy_cost, apply_precision, effective_min_usd,
 )
 from data.database import record_snapshot, record_trade, get_latest_signal_id, get_latest_allocations
-from data.hyperliquid_account import UNIFIED, UnsupportedAccountMode
+from data.hyperliquid_account import UNIFIED, UnsupportedAccountMode, perp_coin
 from data.hyperliquid_book import account_state, execute_legs, mid_price, perp_symbol
 from data.longs import plan_longs
 from data.shorts import held_shorts, plan_shorts
@@ -245,19 +245,21 @@ class Portfolio:
             if coin in symbols and symbols[coin] is None:
                 self.summary.add_summary(f"${coin}: no Hyperliquid perp — held in {STABLE}")
                 continue
-            current_pct = held_usd.get(coin, 0.0) / total_value * 100 if total_value else 0.0
-            target_pct = shorts.get(coin, 0.0)
-            diff = current_pct - target_pct
-            arrow = "🔺" if diff > 0 else "🔻"
-            self.summary.add_summary(
-                f"${coin}: {current_pct:.2f}% short (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
+            self._report_short(coin, held_usd.get(coin, 0.0), shorts.get(coin, 0.0), total_value)
+
+    def _report_short(self, coin: str, held_usd: float, target_pct: float, total_value: float) -> None:
+        current_pct = held_usd / total_value * 100 if total_value else 0.0
+        diff = current_pct - target_pct
+        arrow = "🔺" if diff > 0 else "🔻"
+        self.summary.add_summary(
+            f"${coin}: {current_pct:.2f}% short (Target: {target_pct:.2f}%) {arrow} {diff:.2f}%"
+        )
+        if abs(diff) > REBALANCE_THRESHOLD_PCT:
+            self.summary.add_rebalance(
+                f"⚠️ *Rebalance Needed*: ${coin} short is off by {diff:+.2f}% "
+                f"(Current: {current_pct:.2f}%; Target: {target_pct:.2f}%)"
             )
-            if abs(diff) > REBALANCE_THRESHOLD_PCT:
-                self.summary.add_rebalance(
-                    f"⚠️ *Rebalance Needed*: ${coin} short is off by {diff:+.2f}% "
-                    f"(Current: {current_pct:.2f}%; Target: {target_pct:.2f}%)"
-                )
-                self.send_rebalance = True
+            self.send_rebalance = True
 
     def perp_lines(self) -> list[str]:
         """/balance's perp section: each open Hyperliquid perp's size and side.
@@ -283,8 +285,9 @@ class Portfolio:
     def _held_shorts_usd(exchange, symbols: dict[str, str | None]) -> dict[str, float]:
         """Open shorts as {coin: USD notional at the mid}.
 
-        A coin Hyperliquid lists per thousand (SHIB as KSHIB) is named as the signal
-        names it; a short the signal does not name keeps its perp's base.
+        A coin Hyperliquid lists per thousand (SHIB as kSHIB) is named as the signal
+        names it, also when the signal no longer names it: the perp's own name says
+        whether it is one, where ccxt's upper-cased base (KSHIB, but also KAS) cannot.
         """
         coins = {symbol: coin for coin, symbol in symbols.items() if symbol}
         held = {}
@@ -292,7 +295,9 @@ class Portfolio:
             price = mid_price(exchange, symbol)
             if price is None:
                 raise ValueError(f"no price on Hyperliquid for {symbol}")
-            held[coins.get(symbol, symbol.split("/")[0])] = contracts * price
+            info = exchange.markets[symbol].get("info") or {}
+            name = coins.get(symbol) or perp_coin(info.get("name") or symbol.split("/")[0])[0]
+            held[name] = contracts * price
         return held
 
     def _compute_rebalance(self, prices: dict, values: dict, total_value: float) -> dict[str, float]:
