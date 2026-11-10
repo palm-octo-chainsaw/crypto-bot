@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 
@@ -61,7 +62,9 @@ def _create_schema(conn: psycopg.Connection) -> None:
             dry_run INTEGER NOT NULL,
             fee_amount DOUBLE PRECISION,
             fee_currency TEXT,
-            fee_rate DOUBLE PRECISION
+            fee_rate DOUBLE PRECISION,
+            direction TEXT,
+            perp BOOLEAN
         );
     """)
 
@@ -73,6 +76,11 @@ def _add_missing_columns(conn: psycopg.Connection) -> None:
         ("trades", "fee_rate", "DOUBLE PRECISION"),
         ("signals", "message_timestamp", "TEXT"),
         ("snapshots", "partial", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        # 'long' or 'short', and whether the leg was a perp: a short opens with a sell
+        # and covers with a buy, which `side` alone cannot tell from a spot trade.
+        # NULL on rows written before these were recorded.
+        ("trades", "direction", "TEXT"),
+        ("trades", "perp", "BOOLEAN"),
     ]:
         conn.execute(
             sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} " + col_type).format(
@@ -180,17 +188,26 @@ def record_snapshot(signal_id: int | None, total_value_usd: float,
                 "partial " if partial else "", total_value_usd)
 
 
+@dataclass(frozen=True)
+class Fee:
+    """What the venue charged for a fill, as ccxt reports it; any part may be unknown."""
+    amount: float | None = None
+    currency: str | None = None
+    rate: float | None = None
+
+
 def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  price: float | None, usd_value: float | None, status: str,
-                 order_id: str | None, dry_run: bool,
-                 fee_amount: float | None = None, fee_currency: str | None = None,
-                 fee_rate: float | None = None) -> None:
+                 order_id: str | None, dry_run: bool, fee: Fee | None = None,
+                 direction: str | None = None, perp: bool | None = None) -> None:
+    fee = fee or Fee()
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO trades
                (timestamp, signal_id, symbol, side, amount, price, usd_value,
-                status, order_id, dry_run, fee_amount, fee_currency, fee_rate)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                status, order_id, dry_run, fee_amount, fee_currency, fee_rate,
+                direction, perp)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 datetime.now(timezone.utc),
                 signal_id,
@@ -202,9 +219,11 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                 status,
                 order_id,
                 1 if dry_run else 0,
-                fee_amount,
-                fee_currency,
-                fee_rate,
+                fee.amount,
+                fee.currency,
+                fee.rate,
+                direction,
+                perp,
             ),
         )
 
@@ -229,7 +248,8 @@ def get_latest_allocations() -> dict | None:
 def get_recent_trades(limit: int = 5) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            """SELECT timestamp, symbol, side, amount, usd_value, status, dry_run
+            """SELECT timestamp, symbol, side, amount, usd_value, status, dry_run,
+                      direction, perp
                FROM trades ORDER BY id DESC LIMIT %s""",
             (limit,),
         ).fetchall()
@@ -237,6 +257,7 @@ def get_recent_trades(limit: int = 5) -> list[dict]:
         {
             "timestamp": r[0], "symbol": r[1], "side": r[2], "amount": r[3],
             "usd_value": r[4], "status": r[5], "dry_run": bool(r[6]),
+            "direction": r[7], "perp": r[8],
         }
         for r in rows
     ]
