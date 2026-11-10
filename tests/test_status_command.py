@@ -269,7 +269,7 @@ async def test_get_total_reports_value(fake_context, stub_portfolio):
 
     await ch.get_total(update, fake_context)
 
-    assert "$1,234.56 USD" in _replies(update)[0]
+    assert "$1,234.56" in _replies(update)[0]
 
 
 @pytest.mark.asyncio

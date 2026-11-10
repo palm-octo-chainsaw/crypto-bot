@@ -114,3 +114,12 @@ def reset_command_handler_state(monkeypatch):
     monkeypatch.setattr(ch, "_discord_status", "not yet posted")
     # .env may hold a real webhook; no test should ever post to it.
     monkeypatch.setattr(constants, "DISCORD_WEBHOOK_URL", "")
+
+
+@pytest.fixture(autouse=True)
+def usd_display(monkeypatch):
+    """Show values in USD, so no test reads the settings table or fetches a rate."""
+    from data import fx
+    monkeypatch.setattr(fx, "_selected", "USD")
+    monkeypatch.setattr(fx, "_rates", {})
+    monkeypatch.setattr(fx, "_failed_at", {})
