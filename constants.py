@@ -45,10 +45,29 @@ MANUAL_ASSETS = {
     if asset.strip()
 }
 REBALANCE_RESERVE_PCT = float(getenv("REBALANCE_RESERVE_PCT", "0.5"))
-# Opt-in to trading a signal's shorts. Binance spot cannot short (and its EU
-# accounts get no margin or futures), so no venue the bot trades can act on this
-# yet: until one is wired in, a short's weight is held in USDC either way.
+# Where the book is held and traded. "binance" reads Binance, Kraken and Arbitrum
+# and trades spot on Binance. "hyperliquid" reads and trades only the Hyperliquid
+# account: longs on spot where its book is deep, as a 1x perp elsewhere.
+EXECUTION_VENUE = getenv("EXECUTION_VENUE", "binance").strip().lower()
+if EXECUTION_VENUE not in {"binance", "hyperliquid"}:
+    raise ValueError(f"EXECUTION_VENUE must be binance or hyperliquid, not {EXECUTION_VENUE!r}")
+
+
+def on_hyperliquid() -> bool:
+    """Whether the whole book lives on Hyperliquid. Read at call time, so tests can flip it."""
+    return EXECUTION_VENUE == "hyperliquid"
+# Opt-in to trading a signal's shorts as Hyperliquid perps, on either execution
+# venue. Off, a short's weight is held in USDC. On, that USDC is the shorts'
+# margin: it has to sit on Hyperliquid, and each short is opened against it at
+# SHORT_LEVERAGE.
 SHORTS_ENABLED = getenv("SHORTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+# The main Hyperliquid account, and the private key of an API wallet approved for
+# it (app.hyperliquid.xyz → More → API). The API wallet can trade but not withdraw.
+HYPERLIQUID_ACCOUNT_ADDRESS = getenv("HYPERLIQUID_ACCOUNT_ADDRESS", "")
+HYPERLIQUID_PRIVATE_KEY = getenv("HYPERLIQUID_PRIVATE_KEY", "")
+# Cross-margin leverage set on each shorted coin. At 1x the margin equals the
+# position, so a coin has to roughly double before the account is at risk.
+SHORT_LEVERAGE = max(int(getenv("SHORT_LEVERAGE", "1")), 1)
 # Backstop for the degraded-venue check in Balance.degraded: a snapshot worth
 # less than this fraction of the last clean one is treated as a failed read
 # rather than a real drawdown. Must be between 0 and 1 — a ratio of 1 or more

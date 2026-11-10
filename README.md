@@ -75,8 +75,14 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 # Trade settings (optional)
 MIN_TRADE_USD=1.0
 
+# Execution venue (optional, default binance) — see "The book on Hyperliquid" below
+EXECUTION_VENUE=binance
+
 # Shorts (optional, default false) — see "Shorts in signals" below
 SHORTS_ENABLED=false
+HYPERLIQUID_ACCOUNT_ADDRESS=your_hyperliquid_main_address
+HYPERLIQUID_PRIVATE_KEY=your_hyperliquid_api_wallet_private_key
+SHORT_LEVERAGE=1
 ```
 
 ### 3. Set target allocations
@@ -215,9 +221,9 @@ Signals can call shorts. The parser reads each one as a negative weight, in any 
 `Shorts:` heading (up to the next `Longs:` heading). Signals are stored exactly as written, shorts
 included, so a signal that only changes its shorts still counts as new.
 
-The bot only trades spot, and Binance spot cannot short, so a short is never traded: its weight is
-added to the USDC target, and the coin it names gets a 0% target, so any of it already held is sold
-rather than kept as a long. Telegram, Discord, and `/info` list shorts separately and give the reason.
+A short is never a spot target: its weight is added to the USDC target, and the coin it names gets a
+0% target, so any of it already held is sold rather than kept as a long. Telegram, Discord, and
+`/info` list shorts separately and say where they are held.
 
 The parser never resolves a doubtful line toward a long, because reading a short as a long buys the
 coin the signal is betting against. When it can't tell which side an allocation is on (e.g.
@@ -228,6 +234,48 @@ counts as a failed scrape (alerted on the third in a row) and shows in `/fetch_s
 The 95–105% total check uses the gross total (longs + shorts), so a short's weight is never spread
 across the longs.
 
-`SHORTS_ENABLED` turns on short trading once a venue that supports shorts is set up. No such venue
-exists in the bot yet, so turning it on now only changes the reason shown (and logs a warning at
-startup): shorts are still held in USDC.
+With `SHORTS_ENABLED` off, that USDC just sits wherever it is. With it on, every rebalance (manual or
+after a new signal) brings the shorts on Hyperliquid perps to the latest stored signal:
+
+- Each short is sized as its % of the whole portfolio (less the rebalance reserve), at the
+  Hyperliquid mid. Only the difference from the open position is traded, as a market order capped
+  1% through the mid. A coin the signal no longer shorts is covered in full with a reduce-only buy.
+- The USDC target that holds the shorts' weight is their margin, so that USDC has to be on
+  Hyperliquid. The bot never moves funds between venues: deposit it yourself. Shorts the free
+  margin cannot carry are scaled down together, and the rest is reported with where the USDC sits.
+- Positions are cross margin at `SHORT_LEVERAGE` (default 1x, where a coin has to roughly double
+  before the account is at risk). Hyperliquid's account value, unrealized PnL included, counts as
+  USDC in the portfolio total. A failed Hyperliquid read marks the snapshot partial and blocks the
+  rebalance, like any other venue.
+- Coins Hyperliquid lists per thousand units (SHIB as kSHIB) are found automatically. A coin with
+  no perp is skipped and its weight stays in USDC.
+- A new signal that only changes its shorts still triggers the auto-rebalance.
+- Covers go first, so the margin they release can back the opens.
+- A long perp is never covered as a short. With the book on Hyperliquid it is one of the bot's
+  longs; otherwise it was opened by hand and is left alone.
+- If the latest signal can't be read or Hyperliquid can't be reached, the positions are left as
+  they are.
+
+Use an API wallet, not the main key: create one at app.hyperliquid.xyz → More → API, approve it
+for the main account, and set `HYPERLIQUID_PRIVATE_KEY` to its key. It can trade but not withdraw.
+`HYPERLIQUID_ACCOUNT_ADDRESS` is the main account it trades for — the address you deposited to, not
+the API wallet's own address.
+
+### The book on Hyperliquid
+
+`EXECUTION_VENUE=hyperliquid` moves the whole book there. Binance, Kraken and Arbitrum are no longer
+read or traded, and their credentials can be dropped; only the Hyperliquid account counts, so move
+everything before switching or the rest drops out of the total. Set `SHORTS_ENABLED=true` as well to
+trade the shorts.
+
+- Longs in BTC, ETH, SOL and HYPE are bought on spot (UBTC, UETH and USOL are Unit-bridged tokens).
+  Every other coin has no spot book there, or one too thin to trade, and is held as a 1x cross perp
+  long, which pays funding. PAXG is a perp too, so it is no longer manual-only.
+- Holdings are the spot tokens plus the long perps, valued at Hyperliquid mids; CoinGecko is not
+  used. A long perp's notional comes out of the USDC, so the coins and USDC add up to the equity.
+- Each rebalance places every sell and cover first, then the buys and opens, scaled down together
+  to the free USDC.
+- A signal token outside the static list is tracked when Hyperliquid lists a perp for it.
+- The account must be in Unified mode (Hyperliquid → Settings), where spot and perps share one USDC
+  balance. In any other mode the rebalance trades nothing and says so: an API wallet cannot move
+  USDC between the two. Portfolio margin is refused outright.

@@ -17,7 +17,7 @@ from portfolio import Portfolio, STABLE
 import constants
 from constants import CHAT_ID
 from data.scraper import fetch_signal as scrape_signal, TRWRateLimitError, TRWInvalidCredentialsError
-from data.prices import PriceRateLimitError
+from data.prices import PriceRateLimitError, hyperliquid_lists
 from data.database import (
     record_signal, get_latest_message_timestamp, get_latest_allocations,
     get_recent_trades, get_snapshot_at_or_before, get_earliest_snapshot,
@@ -31,7 +31,7 @@ TARGETS_FILE = "config/targets.json"
 GENERIC_ERROR_REPLY = "⚠️ Something went wrong."
 COMMAND_FAILED_LOG = "Command failed: %s"
 LIVE_REBALANCE_ERROR_REPLY = ("⚠️ Live rebalance failed partway — some trades may already "
-                              "have executed. Check Binance before retrying.")
+                              "have executed. Check the exchange before retrying.")
 FETCH_SIGNAL_ERROR_REPLY = "⚠️ Error fetching signal."
 AUTO_REBALANCE_ERROR_REPLY = "⚠️ Auto-rebalance failed."
 
@@ -98,6 +98,7 @@ def _secret_values() -> list[str]:
     values = [
         constants.BINANCE_API_KEY, constants.BINANCE_API_SECRET,
         constants.KRAKEN_API_KEY, constants.KRAKEN_API_SECRET,
+        constants.HYPERLIQUID_PRIVATE_KEY,
         constants.BOT_TOKEN, constants.DATABASE_URL, constants.META_MASK,
         constants.TRW_PASSWORD, constants.TRW_TOTP_SECRET,
         constants.DISCORD_WEBHOOK_URL,
@@ -195,9 +196,11 @@ async def set_bot_commands(bot: ExtBot) -> None:
 
 async def post_init(application: Application) -> None:
     await set_bot_commands(application.bot)
-    if constants.SHORTS_ENABLED:
-        logger.warning("SHORTS_ENABLED is set, but no venue the bot trades can short — "
-                       "signal shorts stay held in %s", STABLE)
+    hyperliquid_trades = constants.on_hyperliquid() or constants.SHORTS_ENABLED
+    if hyperliquid_trades and not (constants.HYPERLIQUID_ACCOUNT_ADDRESS
+                                   and constants.HYPERLIQUID_PRIVATE_KEY):
+        logger.warning("Hyperliquid trades, but its credentials are missing — "
+                       "rebalances will not trade there")
     if CHAT_ID:
         await _send_with_retry(
             application.bot.send_message,
@@ -330,7 +333,7 @@ def _format_signal_section() -> list[str]:
         for symbol, pct in longs.items():
             lines.append(f"{symbol}: {pct}%")
         for symbol, pct in shorts.items():
-            lines.append(f"{symbol}: {pct}% short (held in {STABLE})")
+            lines.append(f"{symbol}: {pct}% short ({_shorts_where()})")
     except Exception as err:
         lines.append(f"⚠️ unavailable ({err})")
     return lines
@@ -368,7 +371,16 @@ def _ping_arbitrum() -> str:
         return f"Arbitrum: ❌ ({err})"
 
 
+def _ping_hyperliquid() -> str:
+    try:
+        return "Hyperliquid: ✅" if hyperliquid_lists("BTC") else "Hyperliquid: ❌"
+    except Exception as err:
+        return f"Hyperliquid: ❌ ({err})"
+
+
 def _format_connectivity_section() -> list[str]:
+    if constants.on_hyperliquid():
+        return ["🔌 *Connectivity*", _ping_hyperliquid()]
     return ["🔌 *Connectivity*", _ping_binance(), _ping_arbitrum()]
 
 
@@ -540,9 +552,13 @@ async def get_leverage_balance(update: Update, context: ContextTypes.DEFAULT_TYP
 async def rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     live = context.args and context.args[0].lower() == "live"
     if live:
+        if constants.on_hyperliquid():
+            venues = "Hyperliquid"
+        else:
+            venues = "Binance and Hyperliquid" if constants.SHORTS_ENABLED else "Binance"
         await _send_with_retry(
             update.message.reply_text,
-            "⚠️ *LIVE MODE* — executing real trades on Binance...", parse_mode="Markdown"
+            f"⚠️ *LIVE MODE* — executing real trades on {venues}...", parse_mode="Markdown"
         )
     try:
         result = portfolio.execute_rebalance(dry_run=not live)
@@ -614,18 +630,19 @@ def _is_older_signal(signal_time: str | None, last_ts: str | None) -> bool:
     return new[0].date() < last[0].date()
 
 
-def _shorts_held_reason() -> str:
-    """Why a signal's shorts sit in the stable coin instead of being traded."""
+def _shorts_where() -> str:
+    """Where a signal's shorts end up."""
     if constants.SHORTS_ENABLED:
-        return "no venue the bot trades can short yet"
-    return "shorts disabled"
+        return f"shorted on Hyperliquid, margined in {STABLE}"
+    return f"held in {STABLE}"
 
 
 def _apply_allocations(allocations: dict) -> None:
     """Point the targets at a signal's longs, holding each short's weight in STABLE.
 
-    The rebalancer trades spot, so a short must never become a target. The coin a
-    signal shorts is still zeroed, so any of it held is sold rather than kept long.
+    The spot rebalancer must never see a short as a target. The coin a signal
+    shorts is still zeroed, so any of it held is sold rather than kept long. With
+    shorts enabled, that STABLE is the Hyperliquid shorts' margin.
     """
     longs, shorts = split_shorts(allocations)
     for symbol in portfolio.targets:
@@ -634,8 +651,8 @@ def _apply_allocations(allocations: dict) -> None:
     if shorts:
         held = sum(shorts.values())
         portfolio.targets[STABLE] = portfolio.targets.get(STABLE, 0.0) + held
-        logger.info("Holding %.2f%% of shorts (%s) in %s: %s", held, ", ".join(shorts),
-                    STABLE, _shorts_held_reason())
+        logger.info("Shorts %s take %.2f%% of the book: %s", ", ".join(shorts), held,
+                    _shorts_where())
     write_json(TARGETS_FILE, portfolio.targets)
 
 
@@ -649,11 +666,24 @@ def _format_signal_message(allocations: dict, signal_time: str | None) -> str:
         lines.append(f"{symbol}: {pct}%")
     if shorts:
         # Sent as Markdown by the poller: no underscores or asterisks in these lines.
-        lines.append(f"\n🔻 Shorts, held in {STABLE} ({_shorts_held_reason()}):")
+        lines.append(f"\n🔻 Shorts, {_shorts_where()}:")
         for symbol, pct in shorts.items():
             lines.append(f"{symbol}: {pct}% short")
     lines.append(f"\nTotal: {sum(longs.values()) + sum(shorts.values())}%")
     return "\n".join(lines)
+
+
+def _shorts_changed(allocations: dict) -> bool:
+    """Whether a new signal moves the shorts the bot trades.
+
+    The spot drift check cannot see them: a signal that only reshuffles its shorts
+    leaves every spot weight, USDC included, where it was.
+    """
+    if not constants.SHORTS_ENABLED:
+        return False
+    _, new = split_shorts(allocations)
+    _, old = split_shorts(get_latest_allocations() or {})
+    return not _allocations_match(new, old)
 
 
 async def _post_signal_to_discord(bot: ExtBot, allocations: dict, signal_time: str | None) -> None:
@@ -903,6 +933,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     logger.info("poll_signal: new signal detected (timestamp %s), applying and rebalancing", signal_time)
+    shorts_changed = _shorts_changed(allocations)
     record_signal(allocations, message_timestamp=signal_time)
     _apply_allocations(allocations)
     _last_poll_status = "new signal detected"
@@ -921,7 +952,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
         _last_poll_status = "price API rate-limited"
         await _alert_price_rate_limit(context, error)
         return
-    if not portfolio.send_rebalance:
+    if not portfolio.send_rebalance and not shorts_changed:
         _last_poll_status = "new signal applied (within drift threshold)"
         await _send_with_retry(
             context.bot.send_message,

@@ -282,7 +282,7 @@ def test_raw_kraken_balance_degrades_on_transport_failure(bare_balance):
 
 def test_every_tracked_symbol_can_be_priced_and_binance_reads_only_tracked_ones():
     """Every static symbol has a CoinGecko id, and Binance reads only tracked ones; tokens
-    beyond them come in through track_on_binance and are priced off Binance instead."""
+    beyond them come in through track_symbols and are priced off Binance instead."""
     from constants import COINGECKO_IDS
 
     assert set(Balance.TRACKED_SYMBOLS) <= set(COINGECKO_IDS)
@@ -301,7 +301,7 @@ def test_a_signal_token_listed_on_binance_is_read_there_and_aggregated(monkeypat
     monkeypatch.setattr(Balance, "_arbitrum_usdc", lambda self: 0.0)
     monkeypatch.setattr(Balance, "_arbitrum_eth", lambda self: 0.0)
 
-    bare_balance.track_on_binance({"TAO": 20.0, "FOMC": 3.0, "BTC": 50.0, "USDC": 27.0})
+    bare_balance.track_symbols({"TAO": 20.0, "FOMC": 3.0, "BTC": 50.0, "USDC": 27.0})
     total = Balance.aggregate(bare_balance.get_venue_balances())
 
     assert asked == ["FOMC", "TAO"], "static symbols are never checked"
@@ -309,7 +309,7 @@ def test_a_signal_token_listed_on_binance_is_read_there_and_aggregated(monkeypat
     assert "FOMC" not in total, "an unlisted token is left to the untracked-target notice"
     assert list(total)[:len(Balance.TRACKED_SYMBOLS)] == list(Balance.TRACKED_SYMBOLS)
 
-    bare_balance.track_on_binance({"TAO": 0.0, "FOMC": 3.0})
+    bare_balance.track_symbols({"TAO": 0.0, "FOMC": 3.0})
     assert asked == ["FOMC", "TAO"], "listings are cached"
     assert "TAO" in bare_balance.effective_binance_symbols, "a 0% target is still held until sold"
 
@@ -320,9 +320,9 @@ def test_a_failed_listing_check_degrades_binance_and_is_retried(monkeypatch, bar
     answers = iter([None, True])
     monkeypatch.setattr(balance_module, "binance_lists_spot_pair", lambda symbol: next(answers))
 
-    bare_balance.track_on_binance({"TAO": 20.0})
+    bare_balance.track_symbols({"TAO": 20.0})
     assert Balance.BINANCE in bare_balance.degraded
     assert "TAO" not in bare_balance.effective_binance_symbols
 
-    bare_balance.track_on_binance({"TAO": 20.0})
+    bare_balance.track_symbols({"TAO": 20.0})
     assert "TAO" in bare_balance.effective_binance_symbols

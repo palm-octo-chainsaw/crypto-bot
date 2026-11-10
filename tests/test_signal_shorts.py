@@ -1,4 +1,4 @@
-"""Shorts in a signal: read as negative weights, never bought, held in USDC."""
+"""Shorts in a signal: read as negative weights, never bought, their weight held in USDC."""
 import pytest
 
 import constants
@@ -121,7 +121,7 @@ def test_apply_allocations_never_sets_a_negative_target(stub_portfolio, written)
 
 
 def test_apply_allocations_holds_shorts_even_with_the_flag_on(stub_portfolio, written, monkeypatch):
-    """No venue the bot trades can short, so the flag changes nothing yet."""
+    """With shorts traded on Hyperliquid, their weight is still USDC: it is their margin."""
     monkeypatch.setattr(constants, "SHORTS_ENABLED", True)
     stub_portfolio.targets = {}
 
@@ -138,15 +138,16 @@ def test_signal_message_lists_shorts_apart_with_the_reason():
     longs, shorts = message.split("🔻")
     assert "BTC: 90.0%" in longs
     assert "SOL" not in longs
-    assert "held in USDC (shorts disabled)" in shorts
+    assert "Shorts, held in USDC:" in shorts
     assert "SOL: 10.0% short" in shorts
     assert "Total: 100.0%" in message
 
 
-def test_signal_message_names_the_missing_venue_when_the_flag_is_on(monkeypatch):
+def test_signal_message_names_hyperliquid_when_the_flag_is_on(monkeypatch):
     monkeypatch.setattr(constants, "SHORTS_ENABLED", True)
     message = ch._format_signal_message({"BTC": 90.0, "SOL": -10.0}, None)
-    assert "no venue the bot trades can short yet" in message
+    assert "shorted on Hyperliquid, margined in USDC" in message
+    assert "_" not in message
 
 
 def test_signal_message_has_no_shorts_section_without_shorts():

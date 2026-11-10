@@ -25,6 +25,28 @@ def create_binance(api_key: str, api_secret: str):
     return exchange
 
 
+# Worst price a Hyperliquid market order may fill at, as a fraction of the mid.
+# Hyperliquid has no true market order: ccxt sends an IOC limit this far through
+# the book, and anything the book cannot fill inside it is cancelled.
+HYPERLIQUID_SLIPPAGE = 0.01
+
+
+def create_hyperliquid(account_address: str, agent_key: str):
+    """Hyperliquid spot and perps, signed by an API wallet trading for the main account.
+
+    An API (agent) wallet can place and cancel orders but cannot withdraw, so the
+    key the bot holds cannot move funds off the account.
+    """
+    exchange = ccxt.hyperliquid({
+        "walletAddress": account_address,
+        "privateKey": agent_key,
+        "enableRateLimit": True,
+        "options": {"defaultType": "swap", "defaultSlippage": HYPERLIQUID_SLIPPAGE},
+    })
+    exchange.load_markets()
+    return exchange
+
+
 def find_direct_pair(exchange, sell_token: str, buy_token: str):
     """Return (symbol, side) if a direct market exists, else None."""
     pair1 = f"{sell_token}/{buy_token}"
@@ -109,6 +131,58 @@ def place_market_buy_cost(exchange, symbol: str, cost: float, dry_run: bool) -> 
     order["fee_rate"] = fee.get("rate")
     order["amount"] = order.get("filled") or order.get("amount") or 0
     order["cost"] = order.get("cost") or cost_precise
+    logger.info("Order filled: id=%s status=%s filled=%s fee=%s %s",
+                order.get("id"), order.get("status"), order["amount"],
+                order["fee_amount"], order["fee_currency"])
+    return order
+
+
+def _hyperliquid_fill_fee(exchange, symbol: str, order_id: str | None, since: int) -> dict:
+    """Fee paid on a Hyperliquid order, summed over its fills.
+
+    The order response carries the fill but not the fee, which only the user's
+    fills report. Best effort: a failed lookup leaves the trade without a fee.
+    """
+    if order_id is None:
+        return {}
+    try:
+        fills = [t for t in exchange.fetch_my_trades(symbol, since=since)
+                 if str(t.get("order")) == str(order_id)]
+    except Exception as err:
+        logger.warning("Failed to fetch Hyperliquid fill fee for %s: %s", order_id, err)
+        return {}
+    fees = [t["fee"] for t in fills if t.get("fee") and t["fee"].get("cost") is not None]
+    if not fees:
+        return {}
+    return {"cost": sum(float(f["cost"]) for f in fees), "currency": fees[0].get("currency")}
+
+
+def place_hyperliquid_order(exchange, symbol: str, side: str, amount: float, price: float,
+                            reduce_only: bool, dry_run: bool) -> dict:
+    """Market order on a Hyperliquid spot pair or perp.
+
+    `price` is the reference the slippage limit is set from. Only a perp can be
+    reduce-only, so a spot order carries no such flag.
+    """
+    if dry_run:
+        logger.info("[DRY RUN] %s %s on %s%s", side.upper(), amount, symbol,
+                    " (reduce-only)" if reduce_only else "")
+        return {"symbol": symbol, "side": side, "amount": amount, "dry_run": True}
+    logger.info("Executing: %s %s on %s%s", side.upper(), amount, symbol,
+                " (reduce-only)" if reduce_only else "")
+    since = exchange.milliseconds()
+    order = _restore_order_identity(
+        exchange.create_order(symbol, "market", side, amount, price,
+                              {"reduceOnly": True} if reduce_only else {}),
+        symbol, side,
+    )
+    order["amount"] = order.get("filled") or order.get("amount") or amount
+    average = order.get("average") or order.get("price")
+    order["cost"] = order.get("cost") or (order["amount"] * average if average else None)
+    fee = order.get("fee") or _hyperliquid_fill_fee(exchange, symbol, order.get("id"), since)
+    order["fee_amount"] = fee.get("cost")
+    order["fee_currency"] = fee.get("currency")
+    order["fee_rate"] = fee.get("rate")
     logger.info("Order filled: id=%s status=%s filled=%s fee=%s %s",
                 order.get("id"), order.get("status"), order["amount"],
                 order["fee_amount"], order["fee_currency"])
