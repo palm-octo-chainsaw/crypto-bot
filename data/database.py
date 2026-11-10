@@ -2,6 +2,7 @@
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import isfinite
 
@@ -187,12 +188,19 @@ def record_snapshot(signal_id: int | None, total_value_usd: float,
                 "partial " if partial else "", total_value_usd)
 
 
+@dataclass(frozen=True)
+class Fee:
+    """What the venue charged for a fill, as ccxt reports it; any part may be unknown."""
+    amount: float | None = None
+    currency: str | None = None
+    rate: float | None = None
+
+
 def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  price: float | None, usd_value: float | None, status: str,
-                 order_id: str | None, dry_run: bool,
-                 fee_amount: float | None = None, fee_currency: str | None = None,
-                 fee_rate: float | None = None, direction: str | None = None,
-                 perp: bool | None = None) -> None:
+                 order_id: str | None, dry_run: bool, fee: Fee | None = None,
+                 direction: str | None = None, perp: bool | None = None) -> None:
+    fee = fee or Fee()
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO trades
@@ -211,9 +219,9 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                 status,
                 order_id,
                 1 if dry_run else 0,
-                fee_amount,
-                fee_currency,
-                fee_rate,
+                fee.amount,
+                fee.currency,
+                fee.rate,
                 direction,
                 perp,
             ),

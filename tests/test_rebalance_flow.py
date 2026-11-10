@@ -388,7 +388,7 @@ def test_persist_trades_only_stores_filled_and_error_legs(monkeypatch):
         ("ETH/USDC", "filled"), ("BTC/USDC", "error")]
     assert rows[0]["signal_id"] == 7
     assert rows[0]["price"] == 2500.0
-    assert rows[0]["fee_amount"] == 0.5
+    assert rows[0]["fee"] == pf.Fee(0.5, "USDC", 0.001)
     assert (rows[0]["direction"], rows[0]["perp"]) == ("long", False)
 
 

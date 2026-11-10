@@ -214,6 +214,14 @@ def test_record_trade_keeps_the_direction(db):
     assert (trade["direction"], trade["perp"]) == ("short", True)
 
 
+def test_record_trade_stores_the_fee_in_its_columns(db):
+    db.record_trade(None, "BTC/USDC", "buy", 0.01, 60000.0, 600.0, "filled", "oid-4",
+                    dry_run=False, fee=db.Fee(0.6, "USDC", 0.001))
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT fee_amount, fee_currency, fee_rate FROM trades").fetchone()
+    assert row == (0.6, "USDC", 0.001)
+
+
 def test_sqlite_migration_preserves_ids_and_advances_sequences(db, tmp_path, monkeypatch):
     """End-to-end check of scripts/migrate_sqlite_to_pg against real Postgres."""
     import sqlite3

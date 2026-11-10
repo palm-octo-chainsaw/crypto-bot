@@ -4,7 +4,7 @@ from data.trading import (
     create_binance, create_hyperliquid, find_direct_pair, place_order,
     place_market_buy_cost, apply_precision, effective_min_usd,
 )
-from data.database import record_snapshot, record_trade, get_latest_signal_id, get_latest_allocations
+from data.database import Fee, record_snapshot, record_trade, get_latest_signal_id, get_latest_allocations
 from data.hyperliquid_account import UNIFIED, UnsupportedAccountMode, perp_coin
 from data.hyperliquid_book import account_state, execute_legs, mid_price, perp_symbol
 from data.longs import plan_longs
@@ -618,9 +618,7 @@ class Portfolio:
                 status=status,
                 order_id=trade.get("id"),
                 dry_run=False,
-                fee_amount=trade.get("fee_amount"),
-                fee_currency=trade.get("fee_currency"),
-                fee_rate=trade.get("fee_rate"),
+                fee=Fee(trade.get("fee_amount"), trade.get("fee_currency"), trade.get("fee_rate")),
                 # Spot is always long; only a Hyperliquid perp leg can be short.
                 direction="short" if trade.get("short") else "long",
                 perp=bool(trade.get("perp")),
