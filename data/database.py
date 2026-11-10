@@ -14,6 +14,8 @@ from constants import DATABASE_URL, SNAPSHOT_GATE_MIN_RATIO, SNAPSHOT_GATE_MAX_A
 logger = logging.getLogger(__name__)
 
 DOUBLE_PRECISION = "DOUBLE PRECISION"
+# Cash rather than a position: a trade against it opens or closes only the other coin.
+CASH = "USDC"
 
 
 def get_connection() -> psycopg.Connection:
@@ -23,8 +25,11 @@ def get_connection() -> psycopg.Connection:
 def init_db() -> None:
     with get_connection() as conn:
         _create_schema(conn)
+        backfill = not _has_column(conn, "trades", "opened")
         _add_missing_columns(conn)
         _retype_timestamps(conn)
+        if backfill:
+            _backfill_opened_closed(conn)
     logger.info("Database initialized")
 
 
@@ -70,7 +75,9 @@ def _create_schema(conn: psycopg.Connection) -> None:
             direction TEXT,
             perp BOOLEAN,
             fx_currency TEXT,
-            fx_rate DOUBLE PRECISION
+            fx_rate DOUBLE PRECISION,
+            opened TEXT,
+            closed TEXT
         );
 
         CREATE TABLE IF NOT EXISTS settings (
@@ -98,12 +105,42 @@ def _add_missing_columns(conn: psycopg.Connection) -> None:
         # NULL on rows written before these were recorded.
         ("trades", "direction", "TEXT"),
         ("trades", "perp", "BOOLEAN"),
+        # The coin the trade opened and the one it closed, as its symbol names them
+        # (see opened_closed). An `error` row names what it was meant to do.
+        ("trades", "opened", "TEXT"),
+        ("trades", "closed", "TEXT"),
     ]:
         conn.execute(
             sql.SQL("ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} " + col_type).format(
                 sql.Identifier(table), sql.Identifier(col)
             )
         )
+
+
+def _has_column(conn: psycopg.Connection, table: str, column: str) -> bool:
+    return conn.execute(
+        """SELECT 1 FROM information_schema.columns
+           WHERE table_schema = current_schema() AND table_name = %s AND column_name = %s""",
+        (table, column),
+    ).fetchone() is not None
+
+
+def _backfill_opened_closed(conn: psycopg.Connection) -> None:
+    """Fill opened/closed on the trades written before they were recorded.
+
+    A spot trade is always long, so its side says it all. A perp row from before
+    `direction` was recorded cannot tell a short being opened from a long being
+    closed, and is left NULL.
+    """
+    rows = conn.execute(
+        """SELECT id, symbol, side, direction FROM trades
+           WHERE direction IS NOT NULL OR position(':' IN symbol) = 0"""
+    ).fetchall()
+    updates = [(*opened_closed(symbol, side, direction or "long"), row_id)
+               for row_id, symbol, side, direction in rows]
+    with conn.cursor() as cur:
+        cur.executemany("UPDATE trades SET opened = %s, closed = %s WHERE id = %s", updates)
+    logger.info("Backfilled opened/closed on %d of the earlier trades", len(updates))
 
 
 def _retype_timestamps(conn: psycopg.Connection) -> None:
@@ -224,6 +261,24 @@ class DisplayRate:
     rate: float | None = None
 
 
+def opened_closed(symbol: str, side: str, direction: str | None) -> tuple[str | None, str | None]:
+    """(coin opened, coin closed) by a trade, None where that side is cash or nothing,
+    and both None without a direction: a perp sell could open a short or close a long.
+
+    A long opens the coin it buys and closes the one it sells; a short opens on the
+    sell and closes on the buy. A cross pair fills both: buying ETH/BTC opens ETH
+    and closes BTC. Coins are named as the symbol names them, so a per-thousand
+    perp is KSHIB (ccxt upper-cases the k), in step with the row's amount.
+    """
+    base, _, quote = symbol.partition("/")
+    quote = quote.split(":")[0]  # a perp names its settlement coin after the colon
+    if side not in ("buy", "sell") or direction not in ("long", "short") or not base or not quote:
+        return None, None
+    bought, sold = (base, quote) if side == "buy" else (quote, base)
+    opened, closed = (sold, bought) if direction == "short" else (bought, sold)
+    return (None if opened == CASH else opened), (None if closed == CASH else closed)
+
+
 def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  price: float | None, usd_value: float | None, status: str,
                  order_id: str | None, dry_run: bool, fee: Fee | None = None,
@@ -231,14 +286,15 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                  display_rate: DisplayRate | None = None) -> None:
     fee = fee or Fee()
     display_rate = display_rate or DisplayRate()
+    opened, closed = opened_closed(symbol, side, direction)
     with get_connection() as conn:
         conn.execute(
             """INSERT INTO trades
                (timestamp, signal_id, symbol, side, amount, price, usd_value,
                 status, order_id, dry_run, fee_amount, fee_currency, fee_rate,
-                direction, perp, fx_currency, fx_rate)
+                direction, perp, fx_currency, fx_rate, opened, closed)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                       %s, %s, %s, %s)""",
+                       %s, %s, %s, %s, %s, %s)""",
             (
                 datetime.now(timezone.utc),
                 signal_id,
@@ -257,6 +313,8 @@ def record_trade(signal_id: int | None, symbol: str, side: str, amount: float,
                 perp,
                 display_rate.currency,
                 display_rate.rate,
+                opened,
+                closed,
             ),
         )
 

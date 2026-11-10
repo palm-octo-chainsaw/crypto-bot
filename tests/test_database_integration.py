@@ -286,3 +286,64 @@ def test_settings_round_trip(db):
     db.set_setting("display_currency", "EUR")
     db.set_setting("display_currency", "GBP")
     assert db.get_setting("display_currency") == "GBP"
+
+
+def _opened_closed(db, order_id):
+    with db.get_connection() as conn:
+        return conn.execute("SELECT opened, closed FROM trades WHERE order_id = %s",
+                            (order_id,)).fetchone()
+
+
+def test_record_trade_stores_what_it_opened_and_closed(db):
+    db.record_trade(None, "ETH/BTC", "buy", 1.0, 3000.0, 3000.0, "filled", "oid-x", dry_run=False,
+                    direction="long", perp=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "oid-s",
+                    dry_run=False, direction="short", perp=True)
+    assert _opened_closed(db, "oid-x") == ("ETH", "BTC")
+    assert _opened_closed(db, "oid-s") == ("SOL", None)
+
+
+def test_init_db_backfills_opened_and_closed_once(db):
+    db.record_trade(None, "ETH/USDC", "sell", 1.0, 3000.0, 3000.0, "filled", "spot", dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "perp-old",
+                    dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "buy", 10.0, 100.0, 1000.0, "filled", "perp-new",
+                    dry_run=False, direction="short", perp=True)
+    with db.get_connection() as conn:
+        conn.execute("ALTER TABLE trades DROP COLUMN opened, DROP COLUMN closed")
+
+    db.init_db()
+
+    assert _opened_closed(db, "spot") == (None, "ETH")
+    # No direction on an old perp row: a short opened and a long closed look alike.
+    assert _opened_closed(db, "perp-old") == (None, None)
+    assert _opened_closed(db, "perp-new") == (None, "SOL")
+
+
+def test_backfill_new_columns_fills_only_what_is_null(db, monkeypatch):
+    import scripts.backfill_new_columns as bf
+    monkeypatch.setattr(bf, "get_connection", db.get_connection)
+    monkeypatch.setattr(bf.fx, "_selected", "EUR")
+    monkeypatch.setattr(bf.constants, "HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+    monkeypatch.setattr(bf, "hyperliquid_directions", lambda address, since: {"77": "short"})
+    monkeypatch.setattr(bf, "daily_usd_rates", lambda code, first, last: [(first, 0.9)])
+    db.record_trade(None, "ETH/USDC", "buy", 1.0, 3000.0, 3000.0, "filled", "spot", dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "77", dry_run=False)
+    db.record_trade(None, "SOL/USDC:USDC", "sell", 10.0, 100.0, 1000.0, "filled", "88", dry_run=False)
+    db.record_snapshot(None, 9000.0, {}, {}, {}, {})
+
+    assert bf.backfill(apply=False)["trades"] == 3
+    with db.get_connection() as conn:
+        assert conn.execute("SELECT count(*) FROM trades WHERE direction IS NOT NULL").fetchone()[0] == 0
+
+    result = bf.backfill(apply=True)
+
+    assert result["unresolved"] == [3]
+    with db.get_connection() as conn:
+        rows = conn.execute("""SELECT order_id, direction, perp, opened, closed, fx_currency, fx_rate
+                               FROM trades ORDER BY id""").fetchall()
+        snapshot = conn.execute("SELECT fx_currency, fx_rate FROM snapshots").fetchone()
+    assert rows == [("spot", "long", False, "ETH", None, "EUR", 0.9),
+                    ("77", "short", True, "SOL", None, "EUR", 0.9),
+                    ("88", None, True, None, None, "EUR", 0.9)]
+    assert snapshot == ("EUR", 0.9)
