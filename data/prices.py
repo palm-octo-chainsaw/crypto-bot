@@ -2,7 +2,9 @@ import logging
 import requests
 from requests import RequestException
 
+import constants
 from constants import COINGECKO_IDS, CRYPTO_PRICES_URL
+from data.hyperliquid_account import THOUSAND_PREFIX
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,53 @@ def binance_lists_spot_pair(base: str, quote: str = BINANCE_QUOTE) -> bool | Non
         return None
     markets = payload.get("symbols") or []
     return any(m.get("status") == "TRADING" and m.get("isSpotTradingAllowed") for m in markets)
+
+
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+
+
+def _hyperliquid_mids() -> dict[str, str]:
+    """Mid price of every Hyperliquid market, perps keyed by coin name."""
+    response = requests.post(HYPERLIQUID_INFO_URL, json={"type": "allMids"}, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def _perp_price(mids: dict, symbol: str) -> float | None:
+    """USD price of one `symbol` off its perp, scaling a per-thousand perp down."""
+    if symbol in mids:
+        return float(mids[symbol])
+    if f"{THOUSAND_PREFIX}{symbol}" in mids:
+        return float(mids[f"{THOUSAND_PREFIX}{symbol}"]) / 1_000
+    return None
+
+
+def hyperliquid_lists(symbol: str) -> bool | None:
+    """Whether Hyperliquid lists a perp on `symbol`; None when it could not say."""
+    try:
+        return _perp_price(_hyperliquid_mids(), symbol) is not None
+    except (RequestException, ValueError) as error:
+        logger.warning("Hyperliquid listing check for %s failed: %s", symbol, error)
+        return None
+
+
+def _fetch_hyperliquid_prices(symbols: list[str]) -> dict[str, float]:
+    """USD prices off Hyperliquid's perp mids, the venue the book is traded on.
+
+    A perp's mid is used for its spot token too: the two track each other within a
+    few basis points, and every coin the bot holds has a perp but not a spot book.
+    """
+    try:
+        mids = _hyperliquid_mids()
+    except (RequestException, ValueError) as error:
+        logger.exception("Error fetching Hyperliquid prices")
+        raise PriceFetchError(f"Hyperliquid price request failed: {error}") from error
+    prices = {}
+    for symbol in symbols:
+        price = 1.0 if symbol == "USDC" else _perp_price(mids, symbol)
+        if price is not None:
+            prices[symbol] = price
+    return prices
 
 
 def _fetch_coingecko_prices(symbols: list[str]) -> dict[str, float]:
@@ -91,12 +140,14 @@ def _fetch_binance_prices(symbols: list[str]) -> dict[str, float]:
 
 def fetch_prices(symbols: list) -> dict[str, float]:
     wanted = [s.upper() for s in symbols]
-    mapped = [s for s in wanted if s in COINGECKO_IDS]
-    unmapped = [s for s in wanted if s not in COINGECKO_IDS]
-
-    prices = _fetch_coingecko_prices(mapped) if mapped else {}
-    if unmapped:
-        prices.update(_fetch_binance_prices(unmapped))
+    if constants.on_hyperliquid():
+        prices = _fetch_hyperliquid_prices(wanted)
+    else:
+        mapped = [s for s in wanted if s in COINGECKO_IDS]
+        unmapped = [s for s in wanted if s not in COINGECKO_IDS]
+        prices = _fetch_coingecko_prices(mapped) if mapped else {}
+        if unmapped:
+            prices.update(_fetch_binance_prices(unmapped))
 
     missing = [s for s in wanted if s not in prices]
     if missing:

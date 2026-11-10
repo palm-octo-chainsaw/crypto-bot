@@ -4,18 +4,22 @@ import krakenex
 from web3 import Web3
 from binance.client import Client
 
+import constants
 from constants import (
     META_MASK,
     BINANCE_API_KEY, BINANCE_API_SECRET,
     KRAKEN_API_KEY, KRAKEN_API_SECRET,
+    HYPERLIQUID_ACCOUNT_ADDRESS,
 )
-from data.prices import binance_lists_spot_pair
+from data.prices import binance_lists_spot_pair, hyperliquid_lists
+from data import hyperliquid_account
 
 logger = logging.getLogger(__name__)
 
 
 class Balance:
     ARBITRUM_RPC = "https://arbitrum-one-rpc.publicnode.com"
+    HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 
     ERC20_ABI = [
         {
@@ -54,13 +58,13 @@ class Balance:
 
     USDC_CONTRACT_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
 
-    ARBITRUM, BINANCE, KRAKEN = "arbitrum", "binance", "kraken"
+    ARBITRUM, BINANCE, HYPERLIQUID, KRAKEN = "arbitrum", "binance", "hyperliquid", "kraken"
     # Venues re-read on every get_venue_balances(). Binance is cached until an explicit
     # refresh, so its flag is owned by _load_binance_balances() instead.
-    LIVE_VENUES = frozenset({ARBITRUM, KRAKEN})
+    LIVE_VENUES = frozenset({ARBITRUM, KRAKEN, HYPERLIQUID})
 
     # Tracked symbols in report order; aggregate() appends any extra symbol a venue
-    # was read for (see track_on_binance) after these.
+    # was read for (see track_symbols) after these.
     TRACKED_SYMBOLS = ("BTC", "PAXG", "SOL", "SUI", "USDC",
                        "ETH", "DOGE", "XRP", "LINK", "HYPE", "BNB", "NEAR")
     # Which symbols each venue is read for. A symbol left out of a venue's set is not
@@ -94,8 +98,8 @@ class Balance:
         self._w3: Web3 | None = None
         self._contracts: dict = {}
         self._degraded: set[str] = set()
-        self._extra_binance: frozenset[str] = frozenset()
-        self._binance_listed: dict[str, bool] = {}
+        self._extra_symbols: frozenset[str] = frozenset()
+        self._listed: dict[str, bool] = {}
 
     @property
     def degraded(self) -> set[str]:
@@ -108,7 +112,8 @@ class Balance:
         that stores or trades on these numbers has to consult this first.
 
         A missing client counts as degraded: the bot holds assets on all three venues,
-        so absent credentials mean an incomplete read, not an empty wallet.
+        so absent credentials mean an incomplete read, not an empty wallet. With the
+        book on Hyperliquid, only Hyperliquid is read, so only it can be degraded.
         """
         return set(self._degraded)
 
@@ -139,35 +144,39 @@ class Balance:
 
     @property
     def effective_binance_symbols(self) -> frozenset[str]:
-        return self.BINANCE_SYMBOLS | self._extra_binance
+        return self.BINANCE_SYMBOLS | self._extra_symbols
 
-    def track_on_binance(self, symbols) -> None:
-        """Also read Binance for these symbols, beyond TRACKED_SYMBOLS.
+    def track_symbols(self, symbols) -> None:
+        """Also read the execution venue for these symbols, beyond TRACKED_SYMBOLS.
 
         A signal can name a token the static lists do not know. It is tracked only
-        when Binance lists it against USDC: anything else could be neither priced nor
-        traded, and its target is reported as untracked instead. The listing is
-        cached for the life of the process.
+        when the venue lists it (Binance against USDC, Hyperliquid as a perp):
+        anything else could be neither priced nor traded, and its target is reported
+        as untracked instead. The listing is cached for the life of the process.
 
-        A failed listing check marks Binance degraded instead of dropping the symbol.
-        A held position missing from the total would size every other leg against a
-        smaller portfolio than the real one.
+        A failed listing check marks the venue degraded instead of dropping the
+        symbol. A held position missing from the total would size every other leg
+        against a smaller portfolio than the real one.
         """
+        if constants.on_hyperliquid():
+            venue, lists, pair = self.HYPERLIQUID, hyperliquid_lists, "as a perp"
+        else:
+            venue, lists, pair = self.BINANCE, binance_lists_spot_pair, "against USDC"
         extra = set()
         for symbol in sorted(set(symbols) - set(self.TRACKED_SYMBOLS)):
-            if symbol not in self._binance_listed:
-                listed = binance_lists_spot_pair(symbol)
+            if symbol not in self._listed:
+                listed = lists(symbol)
                 if listed is None:
-                    self._mark_degraded(self.BINANCE)
+                    self._mark_degraded(venue)
                     continue
                 if not listed:
-                    logger.warning("%s is not listed on Binance against USDC — not tracked", symbol)
-                self._binance_listed[symbol] = listed
-            if self._binance_listed[symbol]:
+                    logger.warning("%s is not listed on %s %s — not tracked", symbol, venue, pair)
+                self._listed[symbol] = listed
+            if self._listed[symbol]:
                 extra.add(symbol)
-        if extra - self._extra_binance:
-            logger.info("Tracking on Binance beyond the static list: %s", ", ".join(sorted(extra)))
-        self._extra_binance = frozenset(extra)
+        if extra - self._extra_symbols:
+            logger.info("Tracking on %s beyond the static list: %s", venue, ", ".join(sorted(extra)))
+        self._extra_symbols = frozenset(extra)
 
     def get_venue_balances(self) -> dict[str, dict[str, float]]:
         """Holdings split by venue: {venue: {symbol: amount}}.
@@ -180,15 +189,22 @@ class Balance:
         # Clearing Binance here would drop a failure that just happened, since
         # update_portfolio() refreshes Binance before calling this.
         self._degraded -= self.LIVE_VENUES
+        if constants.on_hyperliquid():
+            return {self.HYPERLIQUID: self._hyperliquid_holdings()}
         if not self.binance_client:
             self._mark_degraded(self.BINANCE)
         kraken_raw = self.get_raw_kraken_balance()
 
-        return {
+        venues = {
             self.BINANCE: {s: self.get_binance_balance(s) for s in self.effective_binance_symbols},
             self.KRAKEN: {s: self._kraken_balance(s, kraken_raw) for s in self.KRAKEN_SYMBOL_MAP},
             self.ARBITRUM: {"USDC": self._arbitrum_usdc(), "ETH": self._arbitrum_eth()},
         }
+        # Read only while shorts trade there: an unused venue would just turn every
+        # Hyperliquid outage into a partial snapshot.
+        if constants.SHORTS_ENABLED:
+            venues[self.HYPERLIQUID] = {"USDC": self._hyperliquid_usdc()}
+        return venues
 
     @classmethod
     def aggregate(cls, venues: dict[str, dict[str, float]]) -> dict[str, float]:
@@ -261,6 +277,8 @@ class Balance:
             self._binance_balances = {}
 
     def refresh_binance_balances(self) -> None:
+        if constants.on_hyperliquid():
+            return
         if not self.binance_client:
             self._mark_degraded(self.BINANCE)
             return
@@ -288,3 +306,50 @@ class Balance:
             logger.exception("Kraken balance fetch error: %s", err)
             self._mark_degraded(self.KRAKEN)
             return {}
+
+    def _hyperliquid_info(self, request_type: str) -> dict:
+        response = requests.post(
+            self.HYPERLIQUID_INFO_URL,
+            json={"type": request_type, "user": HYPERLIQUID_ACCOUNT_ADDRESS},
+            timeout=self.HTTP_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def _hyperliquid_state(self) -> tuple[str, dict, dict]:
+        """(account mode, perp state, spot state), raising on any failed read."""
+        return (self._hyperliquid_info("userAbstraction"),
+                self._hyperliquid_info("clearinghouseState"),
+                self._hyperliquid_info("spotClearinghouseState"))
+
+    def _hyperliquid_holdings(self) -> dict[str, float]:
+        """The whole book, when it lives on Hyperliquid: every tracked symbol, held or not."""
+        symbols = (*self.TRACKED_SYMBOLS, *sorted(self._extra_symbols))
+        if not HYPERLIQUID_ACCOUNT_ADDRESS:
+            logger.warning("HYPERLIQUID_ACCOUNT_ADDRESS not set; Hyperliquid balances will be 0.")
+            self._mark_degraded(self.HYPERLIQUID)
+            return dict.fromkeys(symbols, 0.0)
+        try:
+            held = hyperliquid_account.holdings(*self._hyperliquid_state())
+        except Exception:
+            logger.exception("Error fetching balances from Hyperliquid")
+            self._mark_degraded(self.HYPERLIQUID)
+            return dict.fromkeys(symbols, 0.0)
+        ignored = sorted(set(held) - set(symbols))
+        if ignored:
+            logger.warning("Ignoring untracked Hyperliquid holdings: %s", ", ".join(ignored))
+        return {symbol: held.get(symbol, 0.0) for symbol in symbols}
+
+    def _hyperliquid_usdc(self) -> float:
+        """The account's USDC on Hyperliquid, the shorts' margin and unrealized PnL
+        included, so a short that is winning or losing moves the portfolio total."""
+        if not HYPERLIQUID_ACCOUNT_ADDRESS:
+            logger.warning("HYPERLIQUID_ACCOUNT_ADDRESS not set; Hyperliquid balance will be 0.")
+            self._mark_degraded(self.HYPERLIQUID)
+            return 0.0
+        try:
+            return hyperliquid_account.usdc_equity(*self._hyperliquid_state())
+        except Exception:
+            logger.exception("Error fetching balances from Hyperliquid")
+            self._mark_degraded(self.HYPERLIQUID)
+            return 0.0
