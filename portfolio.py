@@ -5,7 +5,7 @@ from data.trading import (
     place_market_buy_cost, apply_precision, effective_min_usd,
 )
 from data.database import record_snapshot, record_trade, get_latest_signal_id, get_latest_allocations
-from data.hyperliquid_account import UNIFIED
+from data.hyperliquid_account import UNIFIED, UnsupportedAccountMode
 from data.hyperliquid_book import account_state, execute_legs
 from data.longs import plan_longs
 from data.shorts import plan_shorts
@@ -535,11 +535,12 @@ class Portfolio:
                 fee_rate=trade.get("fee_rate"),
             )
 
-    def execute_rebalance(self, dry_run: bool = True) -> str:
-        on_hyperliquid = constants.on_hyperliquid()
-        if on_hyperliquid and not (HYPERLIQUID_ACCOUNT_ADDRESS and HYPERLIQUID_PRIVATE_KEY):
-            return "⚠️ Hyperliquid credentials not set — cannot execute trades."
-        if not on_hyperliquid and (not BINANCE_API_KEY or not BINANCE_API_SECRET):
+    def _refusal(self) -> str | None:
+        """Why the rebalance cannot trade at all, or None when it can."""
+        if constants.on_hyperliquid():
+            if not (HYPERLIQUID_ACCOUNT_ADDRESS and HYPERLIQUID_PRIVATE_KEY):
+                return "⚠️ Hyperliquid credentials not set — cannot execute trades."
+        elif not BINANCE_API_KEY or not BINANCE_API_SECRET:
             return "⚠️ Binance API credentials not set — cannot execute trades."
 
         self.update_portfolio()
@@ -558,29 +559,23 @@ class Portfolio:
             logger.error("Refusing to rebalance: no target for %s", ", ".join(missing))
             return (f"⚠️ No target set for {', '.join(missing)} in config/targets.json "
                     f"— refusing to rebalance.")
+        return None
+
+    def execute_rebalance(self, dry_run: bool = True) -> str:
+        refusal = self._refusal()
+        if refusal:
+            return refusal
 
         prices, values, total_value = self.fetch_live_data()
         rebalance = self._compute_rebalance(prices, values, total_value)
 
         sells, buys, skipped = self._plan_trades(rebalance, prices)
         untracked = self._untracked_notice()
-        results = list(skipped)
-        notices = [untracked]
-        if (sells or buys) and not on_hyperliquid:
-            binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
-            results.extend(binance_results)
-            notices.append(notice)
-        hyperliquid_results = []
-        if on_hyperliquid or constants.SHORTS_ENABLED:
-            # Off Hyperliquid, the longs went to Binance above and only the shorts are left.
-            longs = (sells, buys) if on_hyperliquid else ({}, {})
-            hyperliquid_results, notice = self._execute_hyperliquid(*longs, prices, total_value, dry_run)
-            results.extend(hyperliquid_results)
-            notices.append(notice)
-        notices = [n for n in notices if n]
+        traded, venue_notices, shorts_acted = self._trade(sells, buys, prices, total_value, dry_run)
+        results = skipped + traded
+        notices = [n for n in (untracked, *venue_notices) if n]
 
-        shorts_acted = any(_trade_status(t) != "dust" for t in hyperliquid_results)
-        if not sells and not buys and not shorts_acted and notices == ([untracked] if untracked else []):
+        if not sells and not buys and not shorts_acted and not venue_notices:
             if results:
                 lines = ["🔄 *Rebalance — nothing executable*\n"] + [_format_trade_line(t) for t in results]
             else:
@@ -596,48 +591,47 @@ class Portfolio:
         lines += [_format_trade_line(t) for t in results]
         return "\n".join(lines)
 
+    def _trade(self, sells: dict, buys: dict, prices: dict, total_value: float,
+               dry_run: bool) -> tuple[list, list, bool]:
+        """Send the legs to their venues. Returns (results, venue notices, whether a short moved)."""
+        on_hyperliquid = constants.on_hyperliquid()
+        results, notices, shorts_acted = [], [], False
+        if (sells or buys) and not on_hyperliquid:
+            binance_results, notice = self._execute_binance(sells, buys, prices, dry_run)
+            results += binance_results
+            notices.append(notice)
+        if on_hyperliquid or constants.SHORTS_ENABLED:
+            # Off Hyperliquid, the longs went to Binance above and only the shorts are left.
+            longs = (sells, buys) if on_hyperliquid else ({}, {})
+            hyperliquid_results, notice = self._execute_hyperliquid(*longs, prices, total_value, dry_run)
+            results += hyperliquid_results
+            notices.append(notice)
+            shorts_acted = any(_trade_status(t) != "dust" for t in hyperliquid_results)
+        return results, [n for n in notices if n], shorts_acted
+
     def _execute_hyperliquid(self, sells: dict, buys: dict, prices: dict, total_value: float,
                              dry_run: bool) -> tuple[list, str | None]:
         """Trade Hyperliquid toward the longs given and the latest signal's shorts.
 
-        Returns (results, notice). The shorts come from the stored signal rather than
-        the targets file, which holds long weights only. Every failure before an
-        order goes out leaves the positions as they are: reading a failure as "no
-        shorts" would cover them all.
+        Returns (results, notice). Every failure before an order goes out leaves the
+        positions as they are: reading a failure as "no shorts" would cover them all.
         """
         legs = (("sell", sells), ("buy", buys))
         if not HYPERLIQUID_ACCOUNT_ADDRESS or not HYPERLIQUID_PRIVATE_KEY:
             logger.error("SHORTS_ENABLED is set but Hyperliquid credentials are missing")
             return [], "⚠️ Hyperliquid credentials not set — shorts left as they are."
 
-        shorts, notice = None, None
-        if constants.SHORTS_ENABLED:
-            try:
-                _, shorts = split_shorts(get_latest_allocations() or {})
-            except Exception as err:
-                logger.exception("Could not read the latest signal's shorts: %s", err)
-                notice = "⚠️ Could not read the latest signal — shorts left as they are."
+        shorts, notice = self._latest_shorts()
         if shorts is None and not sells and not buys:
             return [], notice
 
         try:
             exchange = create_hyperliquid(HYPERLIQUID_ACCOUNT_ADDRESS, HYPERLIQUID_PRIVATE_KEY)
-            exits, entries, results = [], [], []
-            if sells or buys:
-                mode, _, _ = account_state(exchange)
-                if mode != UNIFIED:
-                    # Spot buys and perp margin draw on one USDC balance only in a
-                    # unified account; the bot cannot move USDC between them otherwise.
-                    logger.error("Hyperliquid account mode is %s, not unified", mode)
-                    return (_unattempted_legs(legs, f"account mode {mode}"),
-                            "⚠️ Hyperliquid account is not Unified — switch it in Hyperliquid's "
-                            "settings. Nothing traded.")
-                closing = {coin for coin, pct in self.targets.items() if not pct}
-                exits, entries, results = plan_longs(exchange, sells, buys, prices, closing)
-            if shorts is not None:
-                book_usd = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
-                covers, opens, skipped = plan_shorts(exchange, shorts, book_usd)
-                exits, entries, results = exits + covers, entries + opens, results + skipped
+            exits, entries, results = self._plan_hyperliquid(exchange, sells, buys, prices,
+                                                             shorts, total_value)
+        except UnsupportedAccountMode as err:
+            logger.error("Refusing to trade Hyperliquid: %s", err)
+            return _unattempted_legs(legs, str(err)), f"⚠️ {err}. Nothing traded."
         except Exception as err:
             logger.exception("Hyperliquid unreachable: %s", err)
             unattempted = _unattempted_legs(legs, f"Hyperliquid unreachable: {err}")
@@ -647,12 +641,53 @@ class Portfolio:
         placed, unfunded_usd = execute_legs(exchange, exits, entries, dry_run)
         results += placed
         if unfunded_usd >= MATCHED_USD:
-            elsewhere = self._held_off_venue(STABLE, Balance.HYPERLIQUID)
-            results.append({"symbol": STABLE, "side": "sell", "amount": unfunded_usd,
-                            "usd_value": unfunded_usd, "venue": Balance.HYPERLIQUID,
-                            "label": "Buys and shorts" if buys and shorts else "Buys" if buys else "Shorts",
-                            "held_on": ", ".join(sorted(elsewhere)), "unavailable": True})
+            results.append(self._unfunded_leg(unfunded_usd, bool(buys), bool(shorts)))
         return results, notice
+
+    @staticmethod
+    def _latest_shorts() -> tuple[dict | None, str | None]:
+        """The latest signal's shorts and a notice; None when they are not to be touched.
+
+        They come from the stored signal rather than the targets file, which holds
+        long weights only.
+        """
+        if not constants.SHORTS_ENABLED:
+            return None, None
+        try:
+            return split_shorts(get_latest_allocations() or {})[1], None
+        except Exception as err:
+            logger.exception("Could not read the latest signal's shorts: %s", err)
+            return None, "⚠️ Could not read the latest signal — shorts left as they are."
+
+    def _plan_hyperliquid(self, exchange, sells: dict, buys: dict, prices: dict,
+                          shorts: dict | None, total_value: float) -> tuple[list, list, list]:
+        """(exits, entries, results) for the longs and, unless None, the shorts."""
+        exits, entries, results = [], [], []
+        if sells or buys:
+            mode, _, _ = account_state(exchange)
+            if mode != UNIFIED:
+                # Spot buys and perp margin draw on one USDC balance only in a
+                # unified account; the bot cannot move USDC between them otherwise.
+                raise UnsupportedAccountMode(
+                    "Hyperliquid account is not Unified — switch it in Hyperliquid's settings")
+            closing = {coin for coin, pct in self.targets.items() if not pct}
+            exits, entries, results = plan_longs(exchange, sells, buys, prices, closing)
+        if shorts is not None:
+            book_usd = total_value * (1 - REBALANCE_RESERVE_PCT / 100)
+            covers, opens, skipped = plan_shorts(exchange, shorts, book_usd)
+            exits, entries, results = exits + covers, entries + opens, results + skipped
+        return exits, entries, results
+
+    def _unfunded_leg(self, usd: float, buys: bool, shorts: bool) -> dict:
+        """The buys and opens the free USDC could not carry, and where that USDC sits."""
+        if buys and shorts:
+            label = "Buys and shorts"
+        else:
+            label = "Buys" if buys else "Shorts"
+        elsewhere = self._held_off_venue(STABLE, Balance.HYPERLIQUID)
+        return {"symbol": STABLE, "side": "sell", "amount": usd, "usd_value": usd,
+                "venue": Balance.HYPERLIQUID, "label": label,
+                "held_on": ", ".join(sorted(elsewhere)), "unavailable": True}
 
     def _execute_binance(self, sells: dict, buys: dict, prices: dict,
                          dry_run: bool) -> tuple[list, str | None]:

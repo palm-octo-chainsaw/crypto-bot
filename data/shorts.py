@@ -57,20 +57,29 @@ def plan_shorts(exchange, shorts: dict[str, float], book_usd: float) -> tuple[li
     held = held_shorts(exchange)
     covers, opens = [], []
     for symbol in sorted(target_usd.keys() | held.keys()):
-        price = mid_price(exchange, symbol)
-        if price is None:
-            skipped.append(_short(symbol, "sell", 0.0, 0.0).result(error="no price on Hyperliquid"))
-            continue
-        current = held.get(symbol, 0.0)
-        if target_usd.get(symbol, 0.0) < CLOSED_USD and current:
-            covers.append(_short(symbol, "buy", current, price))
-            continue
-        delta = target_usd.get(symbol, 0.0) / price - current
-        leg = _short(symbol, "sell" if delta > 0 else "buy", abs(delta), price)
-        floor = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
-        if leg.usd < floor:
-            if leg.usd >= CLOSED_USD:
-                skipped.append(leg.result(usd_value=leg.usd, min_usd=floor, dust=True))
-            continue
-        (opens if delta > 0 else covers).append(leg)
+        change = _change(exchange, symbol, target_usd.get(symbol, 0.0), held.get(symbol, 0.0))
+        if isinstance(change, Leg):
+            (opens if change.side == "sell" else covers).append(change)
+        elif change:
+            skipped.append(change)
     return covers, opens, skipped
+
+
+def _change(exchange, symbol: str, target_usd: float, current: float) -> Leg | dict | None:
+    """The leg taking one short from `current` contracts to `target_usd`.
+
+    A result instead when it cannot be traded, None when there is nothing to do.
+    """
+    price = mid_price(exchange, symbol)
+    if price is None:
+        return _short(symbol, "sell", 0.0, 0.0).result(error="no price on Hyperliquid")
+    if target_usd < CLOSED_USD and current:
+        return _short(symbol, "buy", current, price)
+    delta = target_usd / price - current
+    leg = _short(symbol, "sell" if delta > 0 else "buy", abs(delta), price)
+    floor = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
+    if leg.usd >= floor:
+        return leg
+    if leg.usd >= CLOSED_USD:
+        return leg.result(usd_value=leg.usd, min_usd=floor, dust=True)
+    return None

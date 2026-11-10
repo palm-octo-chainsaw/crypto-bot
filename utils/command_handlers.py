@@ -843,6 +843,19 @@ def _poll_skip_status(allocations: dict, signal_time: str | None) -> str | None:
     return None
 
 
+async def _clear_scrape_failures(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """End a failure streak after a good scrape, telling the chat if it had been alerted."""
+    global _scrape_failure_count
+    if _scrape_failure_count >= SCRAPE_FAILURE_ALERT_THRESHOLD:
+        await _send_with_retry(
+            context.bot.send_message,
+            chat_id=CHAT_ID,
+            text="✅ TRW scrape recovered.",
+            parse_mode="Markdown",
+        )
+    _scrape_failure_count = 0
+
+
 async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Scheduled job: check TRW for a new signal; if found, update targets and live-rebalance."""
     global _scrape_failure_count, _last_poll_time, _last_poll_status, _poll_success_count, _poll_failure_count, _rate_limit_until, _credentials_invalid
@@ -913,14 +926,7 @@ async def poll_signal(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         return
 
-    if _scrape_failure_count >= SCRAPE_FAILURE_ALERT_THRESHOLD:
-        await _send_with_retry(
-            context.bot.send_message,
-            chat_id=CHAT_ID,
-            text="✅ TRW scrape recovered.",
-            parse_mode="Markdown",
-        )
-    _scrape_failure_count = 0
+    await _clear_scrape_failures(context)
     _poll_success_count += 1
 
     if not allocations:

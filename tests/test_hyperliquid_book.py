@@ -93,7 +93,8 @@ def test_buys_are_sized_in_usd_on_their_route():
     exits, entries, skipped = plan_longs(FakeHyperliquid(), {}, {"BTC": 0.01, "SHIB": 10_000_000.0},
                                          PRICES, set())
 
-    assert exits == [] and skipped == []
+    assert exits == []
+    assert skipped == []
     btc, shib = entries
     assert (btc.symbol, btc.perp, btc.usd) == ("BTC/USDC", False, pytest.approx(1_000.0))
     # $100 of SHIB is 10,000 kSHIB contracts at $0.01.
@@ -127,7 +128,8 @@ def test_a_spot_remnant_under_the_minimum_is_dust(monkeypatch):
     exits, _, skipped = plan_longs(ex, {"BTC": 0.00005}, {}, PRICES, {"BTC"})
 
     assert exits == []
-    assert skipped[0]["dust"] and skipped[0]["symbol"] == "BTC/USDC"
+    assert skipped[0]["dust"]
+    assert skipped[0]["symbol"] == "BTC/USDC"
 
 
 def test_a_coin_hyperliquid_does_not_list_is_skipped():
@@ -173,7 +175,8 @@ def test_dry_run_counts_the_usdc_a_spot_sell_would_free():
 
     results, unfunded = execute_legs(ex, exits, entries, dry_run=True)
 
-    assert ex.orders == [] and unfunded == 0.0
+    assert ex.orders == []
+    assert unfunded == 0.0
     assert [r["dry_run"] for r in results] == [True, True]
 
 

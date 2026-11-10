@@ -46,6 +46,9 @@ class Leg:
         """USDC the leg ties up when it opens, or frees when it closes."""
         return self.usd / self.leverage
 
+    def sized(self, contracts: float) -> "Leg":
+        return replace(self, contracts=contracts)
+
     def result(self, amount: float | None = None, **flags) -> dict:
         """The leg as a trade result that never reached the venue."""
         return {"symbol": self.symbol, "side": self.side,
@@ -93,7 +96,7 @@ def _place(exchange, leg: Leg, dry_run: bool) -> dict:
         try:
             exchange.set_leverage(leg.leverage, leg.symbol, {"marginMode": "cross"})
         except Exception as err:
-            logger.error("Could not set %sx cross leverage on %s: %s", leg.leverage, leg.symbol, err)
+            logger.exception("Could not set %sx cross leverage on %s: %s", leg.leverage, leg.symbol, err)
             return leg.result(error=f"leverage not set: {err}")
     try:
         amount = apply_precision(exchange, leg.symbol, leg.contracts)
@@ -106,7 +109,7 @@ def _place(exchange, leg: Leg, dry_run: bool) -> dict:
         order = place_hyperliquid_order(exchange, leg.symbol, leg.side, amount, leg.price,
                                         leg.reduce_only, dry_run)
     except Exception as err:
-        logger.error("Hyperliquid %s %s failed: %s", leg.side, leg.symbol, err)
+        logger.exception("Hyperliquid %s %s failed: %s", leg.side, leg.symbol, err)
         return leg.result(amount, error=str(err))
     return {**order, "perp": leg.perp, "short": leg.short, "reduce_only": leg.reduce_only}
 
@@ -141,7 +144,7 @@ def execute_legs(exchange, exits: list[Leg], entries: list[Leg],
 
     unfunded_usd = sum(leg.usd for leg in entries) * (1 - scale)
     for leg in entries:
-        sized = replace(leg, contracts=leg.contracts * scale)
+        sized = leg.sized(leg.contracts * scale)
         floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
         if sized.usd < floor:
             if scale < 1.0:

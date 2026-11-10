@@ -45,6 +45,40 @@ def _held_perp_longs(exchange) -> dict[str, float]:
             if p.get("side") == "long" and float(p.get("contracts") or 0)}
 
 
+def _leg(exchange, coin: str, side: str, amount: float, prices: dict) -> Leg | dict:
+    """`amount` of `coin` as a Leg on its route, or a result when it cannot be traded."""
+    routed = route(exchange, coin)
+    if routed is None:
+        logger.warning("No Hyperliquid market for %s — not traded", coin)
+        return {"symbol": coin, "side": side, "amount": amount, "skipped": True}
+    symbol, perp = routed
+    price = mid_price(exchange, symbol)
+    if price is None:
+        return {"symbol": symbol, "side": side, "amount": amount, "error": "no price on Hyperliquid"}
+    # Sized in USD: a per-thousand perp's contracts are not the coin's units.
+    return Leg(symbol, side, amount * prices[coin] / price, price, perp=perp,
+               reduce_only=perp and side == "sell")
+
+
+def _capped_sell(exchange, leg: Leg, held: float, closing: bool) -> Leg | dict | None:
+    """The sell capped at what its market holds, all of it when `closing`.
+
+    A result instead when it is dust, None when nothing is held there.
+    """
+    if held <= 0:
+        logger.warning("No %s held on Hyperliquid to sell", leg.symbol)
+        return None
+    # The whole position exactly: a float off by a hair would leave a remnant open.
+    leg = leg.sized(held if closing else min(leg.contracts, held))
+    floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
+    # Hyperliquid waives its minimum for a reduce-only order that closes the
+    # whole position, so a closing perp goes whatever its size; a spot
+    # remnant that small cannot be sold.
+    if leg.usd < floor and not (leg.perp and closing):
+        return leg.result(usd_value=leg.usd, min_usd=floor, dust=True)
+    return leg
+
+
 def plan_longs(exchange, sells: dict[str, float], buys: dict[str, float], prices: dict,
                closing: set[str]) -> tuple[list, list, list]:
     """Turn the rebalance's coin amounts into (sells, buys, skipped) on Hyperliquid.
@@ -54,40 +88,20 @@ def plan_longs(exchange, sells: dict[str, float], buys: dict[str, float], prices
     no position is left behind too small to sell later. Buys are left unchecked
     against the minimum, since they are scaled to the free USDC before placing.
     """
+    exits, entries, skipped = [], [], []
+    for coin, amount in buys.items():
+        leg = _leg(exchange, coin, "buy", amount, prices)
+        (entries if isinstance(leg, Leg) else skipped).append(leg)
+
     spot_held = _held_spot(exchange) if sells else {}
     perp_held = _held_perp_longs(exchange) if sells else {}
-    exits, entries, skipped = [], [], []
-    for side, planned in (("sell", sells), ("buy", buys)):
-        for coin, amount in planned.items():
-            routed = route(exchange, coin)
-            if routed is None:
-                logger.warning("No Hyperliquid market for %s — not traded", coin)
-                skipped.append({"symbol": coin, "side": side, "amount": amount, "skipped": True})
-                continue
-            symbol, perp = routed
-            price = mid_price(exchange, symbol)
-            if price is None:
-                skipped.append({"symbol": symbol, "side": side, "amount": amount,
-                                "error": "no price on Hyperliquid"})
-                continue
-            # Sized in USD: a per-thousand perp's contracts are not the coin's units.
-            leg = Leg(symbol, side, amount * prices[coin] / price, price, perp=perp,
-                      reduce_only=perp and side == "sell")
-            if side == "buy":
-                entries.append(leg)
-                continue
-            held = perp_held.get(symbol, 0.0) if perp else max(spot_held.get(coin, 0.0), 0.0)
-            if held <= 0:
-                logger.warning("No %s held on Hyperliquid to sell", symbol)
-                continue
-            leg = Leg(symbol, side, held if coin in closing else min(leg.contracts, held), price,
-                      perp=perp, reduce_only=perp)
-            floor = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
-            # Hyperliquid waives its minimum for a reduce-only order that closes the
-            # whole position, so a closing perp goes whatever its size; a spot
-            # remnant that small cannot be sold.
-            if leg.usd < floor and not (perp and coin in closing):
-                skipped.append(leg.result(usd_value=leg.usd, min_usd=floor, dust=True))
-                continue
+    for coin, amount in sells.items():
+        leg = _leg(exchange, coin, "sell", amount, prices)
+        if isinstance(leg, Leg):
+            held = perp_held.get(leg.symbol, 0.0) if leg.perp else max(spot_held.get(coin, 0.0), 0.0)
+            leg = _capped_sell(exchange, leg, held, coin in closing)
+        if isinstance(leg, Leg):
             exits.append(leg)
+        elif leg:
+            skipped.append(leg)
     return exits, entries, skipped

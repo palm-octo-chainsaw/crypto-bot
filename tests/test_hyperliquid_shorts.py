@@ -97,7 +97,8 @@ def test_plan_sizes_each_short_against_the_whole_book():
     covers, opens, skipped = plan_shorts(FakePerpExchange(), {"SOL": 2.0, "SHIB": 1.0}, 10_000.0)
     opens = _legs(opens)
 
-    assert covers == [] and skipped == []
+    assert covers == []
+    assert skipped == []
     assert opens["SOL/USDC:USDC"] == pytest.approx((2.0, 100.0))       # $200 at $100
     assert opens["KSHIB/USDC:USDC"] == pytest.approx((10_000.0, 0.01))  # $100 at $0.01 per kSHIB
 
@@ -108,7 +109,8 @@ def test_plan_covers_a_coin_the_signal_dropped_in_full():
     covers, opens, _ = plan_shorts(ex, {"SOL": 2.0}, 10_000.0)
 
     assert _legs(covers) == {"ETH/USDC:USDC": (0.003, 2_000.0)}
-    assert covers[0].reduce_only and covers[0].short
+    assert covers[0].reduce_only
+    assert covers[0].short
     assert set(_legs(opens)) == {"SOL/USDC:USDC"}
 
 
@@ -120,7 +122,8 @@ def test_plan_trims_an_oversized_short_and_leaves_dust_alone():
 
     assert _legs(covers) == {"SOL/USDC:USDC": pytest.approx((1.0, 100.0))}
     assert opens == []
-    assert skipped[0]["dust"] and skipped[0]["symbol"] == "ETH/USDC:USDC"
+    assert skipped[0]["dust"]
+    assert skipped[0]["symbol"] == "ETH/USDC:USDC"
 
 
 def test_plan_skips_a_coin_with_no_perp_and_ignores_longs():
@@ -128,7 +131,8 @@ def test_plan_skips_a_coin_with_no_perp_and_ignores_longs():
 
     covers, opens, skipped = plan_shorts(ex, {"XMR": 1.0}, 10_000.0)
 
-    assert covers == [] and opens == []
+    assert covers == []
+    assert opens == []
     assert skipped == [{"symbol": "XMR", "side": "sell", "amount": 0.0, "perp": True, "short": True,
                         "reduce_only": False, "skipped": True}]
 
@@ -166,7 +170,8 @@ def test_no_margin_opens_nothing_and_reports_it_all_unfunded():
 
     results, unfunded = execute_shorts(ex, {"SOL": 2.0}, 10_000.0, dry_run=False)
 
-    assert ex.orders == [] and results == []
+    assert ex.orders == []
+    assert results == []
     assert unfunded == pytest.approx(200.0)
 
 
@@ -175,7 +180,8 @@ def test_dry_run_places_nothing_and_sets_no_leverage():
 
     results, _ = execute_shorts(ex, {"SOL": 2.0}, 10_000.0, dry_run=True)
 
-    assert ex.orders == [] and ex.leverage == []
+    assert ex.orders == []
+    assert ex.leverage == []
     assert [r["dry_run"] for r in results] == [True, True]
 
 
