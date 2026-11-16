@@ -109,6 +109,11 @@ def _place(exchange, leg: Leg, dry_run: bool) -> dict:
         return leg.result(error=str(err))
     if amount <= 0:
         return leg.result(error="size below precision")
+    # Rounding down to the lot size can take a leg that cleared the minimum under it.
+    # Hyperliquid waives the minimum only for a reduce-only close.
+    floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
+    if not leg.reduce_only and amount * leg.price < floor:
+        return leg.result(amount, usd_value=amount * leg.price, min_usd=floor, dust=True)
     try:
         order = place_hyperliquid_order(exchange, leg.symbol, leg.side, amount, leg.price,
                                         leg.reduce_only, dry_run)

@@ -170,6 +170,31 @@ def test_spot_buys_perp_longs_and_shorts_share_the_free_usdc():
     assert [r["short"] for r in results] == [False, False, True]
 
 
+def test_an_open_rounded_down_under_the_minimum_is_dust_not_an_order():
+    ex = FakeHyperliquid()
+    ex.markets["ZEC/USDC:USDC"] = _market(905.0)
+    ex.amount_to_precision = lambda symbol, amount: f"{int(amount * 100) / 100:.2f}"
+    short = book.Leg("ZEC/USDC:USDC", "sell", 0.0115, 905.0, perp=True, short=True)  # $10.41
+
+    results, _ = execute_legs(ex, [], [short], dry_run=False)
+
+    assert ex.orders == []
+    assert results[0]["dust"]
+    assert results[0]["amount"] == pytest.approx(0.01)
+    assert results[0]["min_usd"] == 10.0
+
+
+def test_a_reduce_only_close_rounded_under_the_minimum_is_still_placed():
+    ex = FakeHyperliquid()
+    ex.markets["ZEC/USDC:USDC"] = _market(905.0)
+    ex.amount_to_precision = lambda symbol, amount: f"{int(amount * 100) / 100:.2f}"
+    cover = book.Leg("ZEC/USDC:USDC", "buy", 0.0115, 905.0, perp=True, short=True, reduce_only=True)
+
+    execute_legs(ex, [cover], [], dry_run=False)
+
+    assert [(o[0], o[2]) for o in ex.orders] == [("ZEC/USDC:USDC", 0.01)]
+
+
 def test_dry_run_counts_the_usdc_a_spot_sell_would_free():
     ex = FakeHyperliquid(spot={"UBTC": 0.01}, free_usdc=0.0)
     exits, entries, _ = plan_longs(ex, {"BTC": 0.01}, {"SUI": 100.0}, PRICES, set())
