@@ -8,6 +8,7 @@ unlevered cross-margin perp long, which follows the price the same way but pays
 """
 
 import logging
+from dataclasses import replace
 
 from constants import MIN_TRADE_USD
 from data.hyperliquid_account import SPOT_TOKENS
@@ -69,12 +70,12 @@ def _capped_sell(exchange, leg: Leg, held: float, closing: bool) -> Leg | dict |
         logger.warning("No %s held on Hyperliquid to sell", leg.symbol)
         return None
     # The whole position exactly: a float off by a hair would leave a remnant open.
-    leg = leg.sized(held if closing else min(leg.contracts, held))
+    leg = replace(leg.sized(held if closing else min(leg.contracts, held)), closes=leg.perp and closing)
     floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
     # Hyperliquid waives its minimum for a reduce-only order that closes the
     # whole position, so a closing perp goes whatever its size; a spot
     # remnant that small cannot be sold.
-    if leg.usd < floor and not (leg.perp and closing):
+    if leg.usd < floor and not leg.closes:
         return leg.result(usd_value=leg.usd, min_usd=floor, dust=True)
     return leg
 

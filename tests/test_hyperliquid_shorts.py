@@ -111,6 +111,7 @@ def test_plan_covers_a_coin_the_signal_dropped_in_full():
 
     assert _legs(covers) == {"ETH/USDC:USDC": (0.003, 2_000.0)}
     assert covers[0].reduce_only
+    assert covers[0].closes
     assert covers[0].short
     assert set(_legs(opens)) == {"SOL/USDC:USDC"}
 
@@ -122,6 +123,7 @@ def test_plan_trims_an_oversized_short_and_leaves_dust_alone():
     covers, opens, skipped = plan_shorts(ex, {"SOL": 2.0, "ETH": 2.05}, 10_000.0)
 
     assert _legs(covers) == {"SOL/USDC:USDC": pytest.approx((1.0, 100.0))}
+    assert not covers[0].closes
     assert opens == []
     assert skipped[0]["dust"]
     assert skipped[0]["symbol"] == "ETH/USDC:USDC"

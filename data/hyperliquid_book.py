@@ -33,6 +33,8 @@ class Leg:
     perp: bool = False
     short: bool = False
     reduce_only: bool = False
+    # Closes the whole position, the one order Hyperliquid accepts under its minimum.
+    closes: bool = False
 
     @property
     def usd(self) -> float:
@@ -110,9 +112,10 @@ def _place(exchange, leg: Leg, dry_run: bool) -> dict:
     if amount <= 0:
         return leg.result(error="size below precision")
     # Rounding down to the lot size can take a leg that cleared the minimum under it.
-    # Hyperliquid waives the minimum only for a reduce-only close.
+    # Hyperliquid waives the minimum only for an order closing the whole position:
+    # a reduce-only trim under it is rejected like any other order.
     floor = effective_min_usd(exchange, leg.symbol, MIN_TRADE_USD)
-    if not leg.reduce_only and amount * leg.price < floor:
+    if not leg.closes and amount * leg.price < floor:
         return leg.result(amount, usd_value=amount * leg.price, min_usd=floor, dust=True)
     try:
         order = place_hyperliquid_order(exchange, leg.symbol, leg.side, amount, leg.price,
