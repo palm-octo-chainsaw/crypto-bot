@@ -111,6 +111,7 @@ def test_sells_are_capped_at_what_the_market_holds():
     btc, sui = exits
     assert (btc.symbol, btc.contracts, btc.reduce_only) == ("BTC/USDC", pytest.approx(0.005), False)
     assert (sui.symbol, sui.contracts, sui.reduce_only) == ("SUI/USDC:USDC", pytest.approx(20.0), True)
+    assert not sui.closes
 
 
 def test_a_dropped_perp_long_is_closed_whole_even_under_the_minimum():
@@ -119,6 +120,7 @@ def test_a_dropped_perp_long_is_closed_whole_even_under_the_minimum():
     exits, _, skipped = plan_longs(ex, {"SUI": 1.9}, {}, PRICES, {"SUI"})
 
     assert [(leg.symbol, leg.contracts) for leg in exits] == [("SUI/USDC:USDC", 2.0)]
+    assert exits[0].closes
     assert skipped == []
 
 
@@ -184,11 +186,26 @@ def test_an_open_rounded_down_under_the_minimum_is_dust_not_an_order():
     assert results[0]["min_usd"] == 10.0
 
 
-def test_a_reduce_only_close_rounded_under_the_minimum_is_still_placed():
+def test_a_reduce_only_trim_rounded_under_the_minimum_is_dust_not_an_order():
+    # Hyperliquid rejected exactly this: a 0.01 ZEC cover trimming a short it left open.
     ex = FakeHyperliquid()
     ex.markets["ZEC/USDC:USDC"] = _market(905.0)
     ex.amount_to_precision = lambda symbol, amount: f"{int(amount * 100) / 100:.2f}"
     cover = book.Leg("ZEC/USDC:USDC", "buy", 0.0115, 905.0, perp=True, short=True, reduce_only=True)
+
+    results, _ = execute_legs(ex, [cover], [], dry_run=False)
+
+    assert ex.orders == []
+    assert results[0]["dust"]
+    assert results[0]["amount"] == pytest.approx(0.01)
+
+
+def test_a_whole_position_close_under_the_minimum_is_still_placed():
+    ex = FakeHyperliquid()
+    ex.markets["ZEC/USDC:USDC"] = _market(905.0)
+    ex.amount_to_precision = lambda symbol, amount: f"{int(amount * 100) / 100:.2f}"
+    cover = book.Leg("ZEC/USDC:USDC", "buy", 0.01, 905.0, perp=True, short=True,
+                     reduce_only=True, closes=True)
 
     execute_legs(ex, [cover], [], dry_run=False)
 

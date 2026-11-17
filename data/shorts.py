@@ -33,8 +33,9 @@ def held_shorts(exchange) -> dict[str, float]:
     return held
 
 
-def _short(symbol: str, side: str, contracts: float, price: float) -> Leg:
-    return Leg(symbol, side, contracts, price, perp=True, short=True, reduce_only=side == "buy")
+def _short(symbol: str, side: str, contracts: float, price: float, closes: bool = False) -> Leg:
+    return Leg(symbol, side, contracts, price, perp=True, short=True, reduce_only=side == "buy",
+               closes=closes)
 
 
 def plan_shorts(exchange, shorts: dict[str, float], book_usd: float) -> tuple[list, list, list]:
@@ -74,7 +75,7 @@ def _change(exchange, symbol: str, target_usd: float, current: float) -> Leg | d
     if price is None:
         return _short(symbol, "sell", 0.0, 0.0).result(error="no price on Hyperliquid")
     if target_usd < CLOSED_USD and current:
-        return _short(symbol, "buy", current, price)
+        return _short(symbol, "buy", current, price, closes=True)
     delta = target_usd / price - current
     leg = _short(symbol, "sell" if delta > 0 else "buy", abs(delta), price)
     floor = effective_min_usd(exchange, symbol, MIN_TRADE_USD)
